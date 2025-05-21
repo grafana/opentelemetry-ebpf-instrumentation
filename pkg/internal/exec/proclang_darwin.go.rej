@@ -1,0 +1,10 @@
+diff a/pkg/internal/exec/proclang_darwin.go b/pkg/internal/exec/proclang_darwin.go	(rejected hunks)
+@@ -6,7 +6,7 @@ import (
+ 	"github.com/grafana/beyla/v2/pkg/internal/svc"
+ )
+ 
+-func FindProcLanguage(_ int32, _ *elf.File, _ string) svc.InstrumentableType {
++func FindProcLanguage(_ int32) svc.InstrumentableType {
+ 	return svc.InstrumentableGeneric
+ }
+ 
