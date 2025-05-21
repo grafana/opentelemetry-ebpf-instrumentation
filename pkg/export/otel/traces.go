@@ -55,6 +55,11 @@ const reporterName = "github.com/open-telemetry/opentelemetry-ebpf-instrumentati
 
 var serviceAttrCache = expirable2.NewLRU[svc.UID, []attribute.KeyValue](1024, nil, 5*time.Minute)
 
+type TraceSpanAndAttributes struct {
+	Span       *request.Span
+	Attributes []attribute.KeyValue
+}
+
 type TracesConfig struct {
 	CommonEndpoint string `yaml:"-" env:"OTEL_EXPORTER_OTLP_ENDPOINT"`
 	TracesEndpoint string `yaml:"endpoint" env:"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"`
@@ -228,11 +233,29 @@ func (tr *tracesOTELReceiver) processSpans(ctx context.Context, exp exporter.Tra
 			continue
 		}
 
-		envResourceAttrs := ResourceAttrsFromEnv(&span.Service)
-		traces := GenerateTracesWithAttributes(span, tr.ctxInfo.HostID, finalAttrs, envResourceAttrs)
-		err := exp.ConsumeTraces(ctx, traces)
-		if err != nil {
-			slog.Error("error sending trace to consumer", "error", err)
+		group, ok := spanGroups[span.Service.UID]
+		if !ok {
+			group = []TraceSpanAndAttributes{}
+		}
+		group = append(group, TraceSpanAndAttributes{Span: span, Attributes: finalAttrs})
+		spanGroups[span.Service.UID] = group
+	}
+
+	return spanGroups
+}
+
+func (tr *tracesOTELReceiver) processSpans(ctx context.Context, exp exporter.Traces, spans []request.Span, traceAttrs map[attr.Name]struct{}, sampler trace.Sampler) {
+	spanGroups := GroupSpans(ctx, spans, traceAttrs, sampler, tr.is)
+
+	for _, spanGroup := range spanGroups {
+		if len(spanGroup) > 0 {
+			sample := spanGroup[0]
+			envResourceAttrs := ResourceAttrsFromEnv(&sample.Span.Service)
+			traces := generateTracesWithAttributes(&sample.Span.Service, envResourceAttrs, tr.ctxInfo.HostID, spanGroup)
+			err := exp.ConsumeTraces(ctx, traces)
+			if err != nil {
+				slog.Error("error sending trace to consumer", "error", err)
+			}
 		}
 	}
 }
@@ -465,59 +488,66 @@ func traceAppResourceAttrs(hostID string, service *svc.Attrs) []attribute.KeyVal
 	return attrs
 }
 
-func GenerateTracesWithAttributes(span *request.Span, hostID string, attrs []attribute.KeyValue, envResourceAttrs []attribute.KeyValue) ptrace.Traces {
-	t := span.Timings()
-	start := spanStartTime(t)
-	hasSubSpans := t.Start.After(start)
+func generateTracesWithAttributes(svc *svc.Attrs, envResourceAttrs []attribute.KeyValue, hostID string, spans []TraceSpanAndAttributes) ptrace.Traces {
 	traces := ptrace.NewTraces()
 	rs := traces.ResourceSpans().AppendEmpty()
-	ss := rs.ScopeSpans().AppendEmpty()
-	resourceAttrs := traceAppResourceAttrs(hostID, &span.Service)
+	resourceAttrs := traceAppResourceAttrs(hostID, svc)
 	resourceAttrs = append(resourceAttrs, envResourceAttrs...)
 	resourceAttrsMap := attrsToMap(resourceAttrs)
 	resourceAttrsMap.PutStr(string(semconv.OTelLibraryNameKey), reporterName)
 	resourceAttrsMap.CopyTo(rs.Resource().Attributes())
 
-	traceID := pcommon.TraceID(span.TraceID)
-	spanID := pcommon.SpanID(RandomSpanID())
-	// This should never happen
-	if traceID.IsEmpty() {
-		traceID = pcommon.TraceID(RandomTraceID())
+	for _, spanWithAttributes := range spans {
+		span := spanWithAttributes.Span
+		attrs := spanWithAttributes.Attributes
+
+		ss := rs.ScopeSpans().AppendEmpty()
+
+		t := span.Timings()
+		start := spanStartTime(t)
+		hasSubSpans := t.Start.After(start)
+
+		traceID := pcommon.TraceID(span.TraceID)
+		spanID := pcommon.SpanID(RandomSpanID())
+		// This should never happen
+		if traceID.IsEmpty() {
+			traceID = pcommon.TraceID(RandomTraceID())
+		}
+
+		if hasSubSpans {
+			createSubSpans(span, spanID, traceID, &ss, t)
+		} else if span.SpanID.IsValid() {
+			spanID = pcommon.SpanID(span.SpanID)
+		}
+
+		// Create a parent span for the whole request session
+		s := ss.Spans().AppendEmpty()
+		s.SetName(span.TraceName())
+		s.SetKind(ptrace.SpanKind(SpanKind(span)))
+		s.SetStartTimestamp(pcommon.NewTimestampFromTime(start))
+
+		// Set trace and span IDs
+		s.SetSpanID(spanID)
+		s.SetTraceID(traceID)
+		if span.ParentSpanID.IsValid() {
+			s.SetParentSpanID(pcommon.SpanID(span.ParentSpanID))
+		}
+
+		// Set span attributes
+		m := attrsToMap(attrs)
+		m.CopyTo(s.Attributes())
+
+		// Set status code
+		statusCode := codeToStatusCode(request.SpanStatusCode(span))
+		s.Status().SetCode(statusCode)
+		s.SetEndTimestamp(pcommon.NewTimestampFromTime(t.End))
 	}
-
-	if hasSubSpans {
-		createSubSpans(span, spanID, traceID, &ss, t)
-	} else if span.SpanID.IsValid() {
-		spanID = pcommon.SpanID(span.SpanID)
-	}
-
-	// Create a parent span for the whole request session
-	s := ss.Spans().AppendEmpty()
-	s.SetName(span.TraceName())
-	s.SetKind(ptrace.SpanKind(spanKind(span)))
-	s.SetStartTimestamp(pcommon.NewTimestampFromTime(start))
-
-	// Set trace and span IDs
-	s.SetSpanID(spanID)
-	s.SetTraceID(traceID)
-	if span.ParentSpanID.IsValid() {
-		s.SetParentSpanID(pcommon.SpanID(span.ParentSpanID))
-	}
-
-	// Set span attributes
-	m := attrsToMap(attrs)
-	m.CopyTo(s.Attributes())
-
-	// Set status code
-	statusCode := codeToStatusCode(request.SpanStatusCode(span))
-	s.Status().SetCode(statusCode)
-	s.SetEndTimestamp(pcommon.NewTimestampFromTime(t.End))
 	return traces
 }
 
 // GenerateTraces creates a ptrace.Traces from a request.Span
-func GenerateTraces(span *request.Span, hostID string, userAttrs map[attr.Name]struct{}, envResourceAttrs []attribute.KeyValue) ptrace.Traces {
-	return GenerateTracesWithAttributes(span, hostID, traceAttributes(span, userAttrs), envResourceAttrs)
+func GenerateTraces(svc *svc.Attrs, envResourceAttrs []attribute.KeyValue, hostID string, spans []TraceSpanAndAttributes) ptrace.Traces {
+	return generateTracesWithAttributes(svc, envResourceAttrs, hostID, spans)
 }
 
 // createSubSpans creates the internal spans for a request.Span
@@ -602,18 +632,18 @@ func grpcTracer(ctx context.Context, opts otlpOptions) (*otlptrace.Exporter, err
 	return texp, nil
 }
 
-func (tr *tracesOTELReceiver) acceptSpan(span *request.Span) bool {
+func acceptSpan(is instrumentations.InstrumentationSelection, span *request.Span) bool {
 	switch span.Type {
 	case request.EventTypeHTTP, request.EventTypeHTTPClient:
-		return tr.is.HTTPEnabled()
+		return is.HTTPEnabled()
 	case request.EventTypeGRPC, request.EventTypeGRPCClient:
-		return tr.is.GRPCEnabled()
+		return is.GRPCEnabled()
 	case request.EventTypeSQLClient:
-		return tr.is.SQLEnabled()
+		return is.SQLEnabled()
 	case request.EventTypeRedisClient, request.EventTypeRedisServer:
-		return tr.is.RedisEnabled()
+		return is.RedisEnabled()
 	case request.EventTypeKafkaClient, request.EventTypeKafkaServer:
-		return tr.is.KafkaEnabled()
+		return is.KafkaEnabled()
 	}
 
 	return false
@@ -731,7 +761,7 @@ func traceAttributes(span *request.Span, optionalAttrs map[attr.Name]struct{}) [
 	return attrs
 }
 
-func spanKind(span *request.Span) trace2.SpanKind {
+func SpanKind(span *request.Span) trace2.SpanKind {
 	switch span.Type {
 	case request.EventTypeHTTP, request.EventTypeGRPC, request.EventTypeRedisServer, request.EventTypeKafkaServer:
 		return trace2.SpanKindServer
