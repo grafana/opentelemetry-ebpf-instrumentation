@@ -147,6 +147,10 @@ func (i *Instrumenter) stop() error {
 	}
 }
 
+func (i *Instrumenter) handleAndDispatchProcessEvent(pe exec.ProcessEvent) {
+	i.processEventInput.Send(pe)
+}
+
 func setupFeatureContextInfo(ctx context.Context, ctxInfo *global.ContextInfo, config *beyla.Config) {
 	ctxInfo.AppO11y.ReportRoutes = config.Routes != nil
 	setupKubernetes(ctx, ctxInfo)
