@@ -3,6 +3,7 @@ package kube
 import (
 	"sync"
 	"testing"
+	"text/template"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -90,7 +91,7 @@ func TestContainerInfo(t *testing.T) {
 
 	fInformer := &fakeInformer{}
 
-	store := NewStore(fInformer, ResourceLabels{})
+	store := NewStore(fInformer, ResourceLabels{}, nil)
 
 	_ = store.On(&informer.Event{Type: informer.EventType_CREATED, Resource: &service})
 	_ = store.On(&informer.Event{Type: informer.EventType_CREATED, Resource: &podMetaA})
@@ -257,7 +258,7 @@ func TestMemoryCleanedUp(t *testing.T) {
 
 	fInformer := &fakeInformer{}
 
-	store := NewStore(fInformer, ResourceLabels{})
+	store := NewStore(fInformer, ResourceLabels{}, nil)
 
 	_ = store.On(&informer.Event{Type: informer.EventType_CREATED, Resource: &service})
 	_ = store.On(&informer.Event{Type: informer.EventType_CREATED, Resource: &podMetaA})
@@ -281,7 +282,7 @@ func TestMemoryCleanedUp(t *testing.T) {
 // Fixes a memory leak in the store where the objectMetaByIP map was not cleaned up
 func TestMetaByIPEntryRemovedIfIPGroupChanges(t *testing.T) {
 	// GIVEN a store with
-	store := NewStore(&fakeInformer{}, ResourceLabels{})
+	store := NewStore(&fakeInformer{}, ResourceLabels{}, nil)
 	// WHEN an object is created with several IPs
 	_ = store.On(&informer.Event{
 		Type: informer.EventType_CREATED,
@@ -326,7 +327,7 @@ func TestMetaByIPEntryRemovedIfIPGroupChanges(t *testing.T) {
 }
 
 func TestNoLeakOnUpdateOrDeletion(t *testing.T) {
-	store := NewStore(&fakeInformer{}, ResourceLabels{})
+	store := NewStore(&fakeInformer{}, ResourceLabels{}, nil)
 	topOwner := &informer.Owner{Name: "foo", Kind: "Deployment"}
 	require.NoError(t, store.On(&informer.Event{
 		Type: informer.EventType_CREATED,

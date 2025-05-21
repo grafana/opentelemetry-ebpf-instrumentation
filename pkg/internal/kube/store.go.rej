@@ -1,0 +1,13 @@
+diff a/pkg/internal/kube/store.go b/pkg/internal/kube/store.go	(rejected hunks)
+@@ -1,9 +1,11 @@
+ package kube
+ 
+ import (
++	"bytes"
+ 	"log/slog"
+ 	"strings"
+ 	"sync"
++	"text/template"
+ 
+ 	"github.com/grafana/beyla/v2/pkg/export/attributes"
+ 	attr "github.com/grafana/beyla/v2/pkg/export/attributes/names"
