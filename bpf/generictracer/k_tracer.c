@@ -95,16 +95,18 @@ int BPF_KPROBE(beyla_kprobe_tcp_rcv_established, struct sock *sk, struct sk_buff
         sort_connection_info(&pid_info.p_conn.conn);
         pid_info.p_conn.pid = pid_from_pid_tgid(id);
 
-        // This is a current limitation for port ordering detection for SSL.
-        // tcp_rcv_established flip flops the ports and we can't tell if it's client or server call.
-        // If the source port for a client call is lower, we'll get this wrong.
-        // TODO: Need to fix this.
-        pid_info.orig_dport = pid_info.p_conn.conn.s_port,
-        bpf_map_update_elem(
-            &pid_tid_to_conn,
-            &id,
-            &pid_info,
-            BPF_ANY); // to support SSL on missing handshake, respect the original info if there
+        ssl_pid_connection_info_t *prev_info = bpf_map_lookup_elem(&pid_tid_to_conn, &id);
+        // We only update here when we don't know the direction if we haven't previously
+        // set the information in sys_accept or sys_connect
+        if (!prev_info || (prev_info->p_conn.conn.d_port != pid_info.p_conn.conn.d_port) ||
+            (prev_info->p_conn.conn.s_port != pid_info.p_conn.conn.s_port)) {
+            // This is a current limitation for port ordering detection for SSL.
+            // tcp_rcv_established flip flops the ports and we can't tell if it's client or server call.
+            // If the source port for a client call is lower, we'll get this wrong.
+            // Set orig_dport to 0 to avoid swapping connection infos for clients
+            pid_info.orig_dport = 0;
+            bpf_map_update_elem(&pid_tid_to_conn, &id, &pid_info, BPF_ANY);
+        }
     }
 
     return 0;
@@ -149,8 +151,8 @@ int BPF_KRETPROBE(beyla_kretprobe_sys_accept4, uint fd) {
         info.p_conn.pid = pid_from_pid_tgid(id);
         info.orig_dport = orig_dport;
 
-        bpf_map_update_elem(
-            &pid_tid_to_conn, &id, &info, BPF_ANY); // to support SSL on missing handshake
+        // to support SSL on missing handshake
+        bpf_map_update_elem(&pid_tid_to_conn, &id, &info, BPF_ANY);
     }
 
 cleanup:
