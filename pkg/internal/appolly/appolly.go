@@ -12,9 +12,12 @@ import (
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/app/request"
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/beyla"
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/internal/discover"
+	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/internal/exec"
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/internal/pipe"
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/internal/pipe/global"
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/pipe/msg"
+	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/pipe/swarm"
+	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/transform"
 )
 
 var errShutdownTimeout = errors.New("graceful shutdown has timed out")
