@@ -355,7 +355,6 @@ func TestGenerateTraces(t *testing.T) {
 			ParentSpanID: parentSpanID,
 			TraceID:      traceID,
 			SpanID:       spanID,
-			Service:      svc.Attrs{UID: svc.UID{Pid: 1}},
 		}
 
 		traces := GenerateTraces(&span.Service, []attribute.KeyValue{}, "host-id", groupFromSpanAndAttributes(span, []attribute.KeyValue{}))
@@ -645,7 +644,6 @@ func TestTraceGrouping(t *testing.T) {
 			Route:        "/test" + strconv.Itoa(i),
 			Status:       200,
 			TraceID:      RandomTraceID(),
-			Service:      svc.Attrs{UID: svc.UID{Pid: 1}}, // Same service for all spans
 		}
 		spans = append(spans, span)
 	}
@@ -683,7 +681,7 @@ func TestTraceSampling(t *testing.T) {
 			Route:        "/test" + strconv.Itoa(i),
 			Status:       200,
 			TraceID:      RandomTraceID(),
-			Service:      svc.Attrs{UID: svc.UID{Pid: int32(i)}},
+			Service:      svc.Attrs{},
 		}
 		spans = append(spans, span)
 	}
@@ -754,7 +752,7 @@ func TestTraceSkipSpanMetrics(t *testing.T) {
 			Method:       "GET",
 			Route:        "/test" + strconv.Itoa(i),
 			Status:       200,
-			Service:      svc.Attrs{UID: svc.UID{Pid: int32(i)}},
+			Service:      svc.Attrs{},
 			TraceID:      RandomTraceID(),
 		}
 		spans = append(spans, span)

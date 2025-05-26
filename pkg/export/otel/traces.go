@@ -206,7 +206,7 @@ func (tr *tracesOTELReceiver) getConstantAttributes() (map[attr.Name]struct{}, e
 }
 
 func spanDiscarded(span *request.Span, is instrumentations.InstrumentationSelection) bool {
-	return span.IgnoreTraces() || span.Service.ExportsOTelTraces() || !acceptSpan(is, span)
+	return span.Service.ExportsOTelTraces() || !acceptSpan(is, span)
 }
 
 func GroupSpans(ctx context.Context, spans []request.Span, traceAttrs map[attr.Name]struct{}, sampler trace.Sampler, is instrumentations.InstrumentationSelection) map[svc.UID][]TraceSpanAndAttributes {
