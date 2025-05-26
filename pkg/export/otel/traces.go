@@ -205,27 +205,28 @@ func (tr *tracesOTELReceiver) getConstantAttributes() (map[attr.Name]struct{}, e
 	return traceAttrs, nil
 }
 
-func (tr *tracesOTELReceiver) spanDiscarded(span *request.Span) bool {
-	return span.Service.ExportsOTelTraces() || !tr.acceptSpan(span)
+func spanDiscarded(span *request.Span, is instrumentations.InstrumentationSelection) bool {
+	return span.IgnoreTraces() || span.Service.ExportsOTelTraces() || !acceptSpan(is, span)
 }
 
-func (tr *tracesOTELReceiver) processSpans(ctx context.Context, exp exporter.Traces, spans []request.Span, traceAttrs map[attr.Name]struct{}, sampler trace.Sampler) {
+func GroupSpans(ctx context.Context, spans []request.Span, traceAttrs map[attr.Name]struct{}, sampler trace.Sampler, is instrumentations.InstrumentationSelection) map[svc.UID][]TraceSpanAndAttributes {
+	spanGroups := map[svc.UID][]TraceSpanAndAttributes{}
 	for i := range spans {
 		span := &spans[i]
 		if span.InternalSignal() {
 			continue
 		}
-		if tr.spanDiscarded(span) {
+		if spanDiscarded(span, is) {
 			continue
 		}
 
-		finalAttrs := traceAttributes(span, traceAttrs)
+		finalAttrs := TraceAttributes(span, traceAttrs)
 
 		sr := sampler.ShouldSample(trace.SamplingParameters{
 			ParentContext: ctx,
 			Name:          span.TraceName(),
 			TraceID:       span.TraceID,
-			Kind:          spanKind(span),
+			Kind:          SpanKind(span),
 			Attributes:    finalAttrs,
 		})
 
@@ -656,7 +657,7 @@ var (
 )
 
 //nolint:cyclop
-func traceAttributes(span *request.Span, optionalAttrs map[attr.Name]struct{}) []attribute.KeyValue {
+func TraceAttributes(span *request.Span, optionalAttrs map[attr.Name]struct{}) []attribute.KeyValue {
 	var attrs []attribute.KeyValue
 
 	switch span.Type {

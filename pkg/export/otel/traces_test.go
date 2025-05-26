@@ -622,13 +622,51 @@ func TestGenerateTracesAttributes(t *testing.T) {
 		defer restoreEnvAfterExecution()()
 		t.Setenv(envResourceAttrs, "deployment.environment=productions,source.upstream=beyla")
 		span := request.Span{Type: request.EventTypeHTTP, Method: "GET", Route: "/test", Status: 200}
-		traces := GenerateTraces(&span, "host-id", map[attr.Name]struct{}{}, ResourceAttrsFromEnv(&span.Service))
+		tAttrs := TraceAttributes(&span, map[attr.Name]struct{}{})
+		traces := GenerateTraces(&span.Service, ResourceAttrsFromEnv(&span.Service), "host-id", groupFromSpanAndAttributes(&span, tAttrs))
 
 		assert.Equal(t, 1, traces.ResourceSpans().Len())
 		rs := traces.ResourceSpans().At(0)
 		attrs := rs.Resource().Attributes()
 		ensureTraceStrAttr(t, attrs, attribute.Key("deployment.environment"), "productions")
 		ensureTraceStrAttr(t, attrs, attribute.Key("source.upstream"), "beyla")
+	})
+}
+
+func TestTraceGrouping(t *testing.T) {
+	spans := []request.Span{}
+	start := time.Now()
+	for i := 0; i < 10; i++ {
+		span := request.Span{Type: request.EventTypeHTTP,
+			RequestStart: start.UnixNano(),
+			Start:        start.Add(time.Second).UnixNano(),
+			End:          start.Add(3 * time.Second).UnixNano(),
+			Method:       "GET",
+			Route:        "/test" + strconv.Itoa(i),
+			Status:       200,
+			TraceID:      RandomTraceID(),
+			Service:      svc.Attrs{UID: svc.UID{Pid: 1}}, // Same service for all spans
+		}
+		spans = append(spans, span)
+	}
+
+	receiver := makeTracesTestReceiver([]string{"http"})
+
+	t.Run("test sample all, same service", func(t *testing.T) {
+		sampler := sdktrace.AlwaysSample()
+		attrs := make(map[attr.Name]struct{})
+
+		tr := []ptrace.Traces{}
+
+		exporter := TestExporter{
+			collector: func(td ptrace.Traces) {
+				tr = append(tr, td)
+			},
+		}
+
+		receiver.processSpans(context.Background(), exporter, spans, attrs, sampler)
+		// We should make only one trace, all spans under the same resource attributes
+		assert.Equal(t, 1, len(tr))
 	})
 }
 
@@ -1498,10 +1536,11 @@ func generateTracesForSpans(t *testing.T, tr *tracesOTELReceiver, spans []reques
 	require.NoError(t, err)
 	for i := range spans {
 		span := &spans[i]
-		if tr.spanDiscarded(span) {
+		if spanDiscarded(span, tr.is) {
 			continue
 		}
-		res = append(res, GenerateTraces(span, "host-id", traceAttrs, []attribute.KeyValue{}))
+		tAttrs := TraceAttributes(span, traceAttrs)
+		res = append(res, GenerateTraces(&span.Service, []attribute.KeyValue{}, "host-id", groupFromSpanAndAttributes(span, tAttrs)))
 	}
 
 	return res
