@@ -3,7 +3,6 @@ package traces
 import (
 	"context"
 	"log/slog"
-	"strconv"
 
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/app/request"
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/internal/exec"
@@ -84,8 +83,11 @@ func hostNamePIDDecorator(cfg *InstanceIDConfig) decorator {
 	}
 
 	// caching instance ID composition for speed and saving memory generation
-	return func(s *svc.Attrs, hostPID int) {
-		s.UID.Instance = fullHostName + ":" + strconv.Itoa(hostPID)
+	return func(s *svc.Attrs, _ int) {
+		// FIXME - the pid here is causing a cardinality explosion of the
+		// 'target_info' metrics when instrumenting processes that fork()
+		// s.UID.Instance = fullHostName + ":" + strconv.Itoa(hostPID)
+		s.UID.Instance = fullHostName
 		s.HostName = fullHostName
 	}
 }
