@@ -793,8 +793,6 @@ static __always_inline void setup_http2_client_conn(void *goroutine_addr, void *
 
             if (ok) {
                 bpf_dbg_printk("goroutine_addr %lx", goroutine_addr);
-                go_addr_key_t g_key = {};
-                go_addr_key_from_id(&g_key, goroutine_addr);
 
                 bpf_map_update_elem(&ongoing_client_connections, &g_key, &conn, BPF_ANY);
             }
