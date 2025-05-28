@@ -7,10 +7,10 @@ import (
 
 	"github.com/cilium/ebpf"
 
+	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/app/request"
 	ebpfcommon "github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/internal/ebpf/common"
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/internal/exec"
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/internal/goexec"
-	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/internal/request"
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/internal/svc"
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/pipe/msg"
 )
@@ -95,6 +95,7 @@ type Tracer interface {
 	UnlinkInstrumentedLib(uint64)
 	RegisterOffsets(*exec.FileInfo, *goexec.Offsets)
 	ProcessBinary(*exec.FileInfo)
+	Required() bool
 	// Run will do the action of listening for eBPF traces and forward them
 	// periodically to the output channel.
 	Run(context.Context, *msg.Queue[[]request.Span])
