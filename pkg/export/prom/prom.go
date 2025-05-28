@@ -32,7 +32,9 @@ var timeNow = time.Now
 // but following the different naming conventions
 const (
 	SpanMetricsLatency       = "traces_spanmetrics_latency"
+	SpanMetricsLatencyOTel   = "traces_span_metrics_duration"
 	SpanMetricsCalls         = "traces_spanmetrics_calls_total"
+	SpanMetricsCallsOTel     = "traces_span_metrics_calls_total"
 	SpanMetricsRequestSizes  = "traces_spanmetrics_size_total"
 	SpanMetricsResponseSizes = "traces_spanmetrics_response_size_total"
 	TracesTargetInfo         = "traces_target_info"
@@ -485,7 +487,7 @@ func newReporter(
 		}),
 		spanMetricsLatency: optionalHistogramProvider(cfg.SpanMetricsEnabled(), func() *Expirer[prometheus.Histogram] {
 			return NewExpirer[prometheus.Histogram](prometheus.NewHistogramVec(prometheus.HistogramOpts{
-				Name:                            SpanMetricsLatency,
+				Name:                            cfg.spanMetricsLatencyName(),
 				Help:                            "duration of service calls (client and server), in seconds, in trace span metrics format",
 				Buckets:                         cfg.Buckets.DurationHistogram,
 				NativeHistogramBucketFactor:     defaultHistogramBucketFactor,
@@ -643,9 +645,13 @@ func newReporter(
 		registeredMetrics = append(registeredMetrics,
 			mr.spanMetricsLatency,
 			mr.spanMetricsCallsTotal,
+		)
+	}
+
+	if cfg.SpanMetricsSizesEnabled() {
+		registeredMetrics = append(registeredMetrics,
 			mr.spanMetricsRequestSizeTotal,
 			mr.spanMetricsResponseSizeTotal,
-			mr.tracesTargetInfo,
 		)
 	}
 
@@ -658,8 +664,8 @@ func newReporter(
 		)
 	}
 
-	if cfg.SpanMetricsEnabled() || cfg.ServiceGraphMetricsEnabled() {
-		registeredMetrics = append(registeredMetrics, mr.tracesHostInfo)
+	if cfg.AnySpanMetricsEnabled() {
+		registeredMetrics = append(registeredMetrics, mr.tracesTargetInfo, mr.tracesHostInfo)
 	}
 
 	if is.GPUEnabled() {
@@ -745,7 +751,7 @@ func (r *metricsReporter) observe(span *request.Span) {
 	}
 	t := span.Timings()
 	r.beylaInfo.WithLabelValues(span.Service.SDKLanguage.String()).metric.Set(1.0)
-	if r.cfg.SpanMetricsEnabled() || r.cfg.ServiceGraphMetricsEnabled() {
+	if r.cfg.AnySpanMetricsEnabled() {
 		r.tracesHostInfo.WithLabelValues(r.hostID).metric.Set(1.0)
 	}
 	duration := t.End.Sub(t.RequestStart).Seconds()
