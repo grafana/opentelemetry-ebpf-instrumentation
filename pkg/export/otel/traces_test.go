@@ -349,7 +349,6 @@ func TestGenerateTraces(t *testing.T) {
 			ParentSpanID: parentSpanID,
 			TraceID:      traceID,
 			SpanID:       spanID,
-			Service:      svc.Attrs{UID: svc.UID{Name: "1"}},
 		}
 		traces := GenerateTraces(span, "host-id", map[attr.Name]struct{}{}, []attribute.KeyValue{})
 
@@ -632,8 +631,8 @@ func TestTraceSampling(t *testing.T) {
 			Method:       "GET",
 			Route:        "/test" + strconv.Itoa(i),
 			Status:       200,
+			Service:      svc.Attrs{},
 			TraceID:      RandomTraceID(),
-			Service:      svc.Attrs{UID: svc.UID{Name: strconv.Itoa(i)}},
 		}
 		spans = append(spans, span)
 	}
@@ -704,7 +703,7 @@ func TestTraceSkipSpanMetrics(t *testing.T) {
 			Method:       "GET",
 			Route:        "/test" + strconv.Itoa(i),
 			Status:       200,
-			Service:      svc.Attrs{UID: svc.UID{Name: strconv.Itoa(i)}},
+			Service:      svc.Attrs{},
 			TraceID:      RandomTraceID(),
 		}
 		spans = append(spans, span)
