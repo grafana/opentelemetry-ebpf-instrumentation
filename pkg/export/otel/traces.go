@@ -552,6 +552,7 @@ func createSubSpans(span *request.Span, parentSpanID pcommon.SpanID, traceID pco
 // attrsToMap converts a slice of attribute.KeyValue to a pcommon.Map
 func attrsToMap(attrs []attribute.KeyValue) pcommon.Map {
 	m := pcommon.NewMap()
+	m.EnsureCapacity(len(attrs))
 	for _, attr := range attrs {
 		switch v := attr.Value.AsInterface().(type) {
 		case string:

@@ -1,0 +1,19 @@
+diff a/pkg/export/otel/traces.go b/pkg/export/otel/traces.go	(rejected hunks)
+@@ -502,7 +502,7 @@ func generateTracesWithAttributes(svc *svc.Attrs, envResourceAttrs []attribute.K
+ 	resourceAttrs = append(resourceAttrs, envResourceAttrs...)
+ 	resourceAttrsMap := attrsToMap(resourceAttrs)
+ 	resourceAttrsMap.PutStr(string(semconv.OTelLibraryNameKey), reporterName)
+-	resourceAttrsMap.CopyTo(rs.Resource().Attributes())
++	resourceAttrsMap.MoveTo(rs.Resource().Attributes())
+ 
+ 	for _, spanWithAttributes := range spans {
+ 		span := spanWithAttributes.Span
+@@ -542,7 +542,7 @@ func generateTracesWithAttributes(svc *svc.Attrs, envResourceAttrs []attribute.K
+ 
+ 		// Set span attributes
+ 		m := attrsToMap(attrs)
+-		m.CopyTo(s.Attributes())
++		m.MoveTo(s.Attributes())
+ 
+ 		// Set status code
+ 		statusCode := codeToStatusCode(request.SpanStatusCode(span))
