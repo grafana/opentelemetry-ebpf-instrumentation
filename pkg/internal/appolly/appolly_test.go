@@ -1,8 +1,9 @@
 package appolly
 
 import (
-	"context"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/beyla"
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/export/otel"
@@ -11,12 +12,11 @@ import (
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/internal/ebpf"
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/internal/exec"
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/internal/pipe/global"
-	"github.com/stretchr/testify/assert"
 )
 
 func TestProcessEventsLoopDoesntBlock(t *testing.T) {
 	instr, err := New(
-		context.Background(),
+		t.Context(),
 		&global.ContextInfo{
 			Prometheus: &connector.PrometheusManager{},
 		},
@@ -30,7 +30,7 @@ func TestProcessEventsLoopDoesntBlock(t *testing.T) {
 
 	events := make(chan discover.Event[*ebpf.Instrumentable])
 
-	go instr.instrumentedEventLoop(context.Background(), events)
+	go instr.instrumentedEventLoop(t.Context(), events)
 
 	for i := 0; i < 100; i++ {
 		events <- discover.Event[*ebpf.Instrumentable]{
