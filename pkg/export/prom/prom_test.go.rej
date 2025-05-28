@@ -1,0 +1,10 @@
+diff a/pkg/export/prom/prom_test.go b/pkg/export/prom/prom_test.go	(rejected hunks)
+@@ -68,7 +68,7 @@ func TestAppMetricsExpiration(t *testing.T) {
+ 
+ 	app := exec.FileInfo{
+ 		Service: svc.Attrs{
+-			UID: svc.UID{Pid: 1, Name: "test-app", Namespace: "default", Instance: "test-app-1"},
++			UID: svc.UID{Name: "test-app", Namespace: "default", Instance: "test-app-1"},
+ 		},
+ 		Pid: 1,
+ 	}
