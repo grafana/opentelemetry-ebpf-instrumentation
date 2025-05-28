@@ -23,10 +23,7 @@ import (
 
 // Run in the foreground process. This is a blocking function and won't exit
 // until both the AppO11y and NetO11y components end
-func Run(
-	ctx context.Context, cfg *beyla.Config,
-	opts ...Option,
-) error {
+func Run(ctx context.Context, cfg *beyla.Config, opts ...Option) error {
 	ctxInfo, err := buildCommonContextInfo(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("can't build common context info: %w", err)
@@ -125,7 +122,6 @@ func buildServiceNameTemplate(config *beyla.Config) (*template.Template, error) 
 
 	if config.Attributes.Kubernetes.ServiceNameTemplate != "" {
 		var err error
-
 		templ, err = template.New("serviceNameTemplate").Parse(config.Attributes.Kubernetes.ServiceNameTemplate)
 
 		if err != nil {
