@@ -4,13 +4,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/beyla"
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/transform"
 )
 
 func TestServiceNameTemplate(t *testing.T) {
-
 	cfg := &beyla.Config{
 		Attributes: beyla.Attributes{
 			Kubernetes: transform.KubernetesDecorator{
@@ -29,12 +29,12 @@ func TestServiceNameTemplate(t *testing.T) {
 	cfg.Attributes.Kubernetes.ServiceNameTemplate = `{{- if eq .Meta.Pod nil }}{{.Meta.Name}}{{ else }}{{- .Meta.Namespace }}/{{ index .Meta.Labels "app.kubernetes.io/name" }}/{{ index .Meta.Labels "app.kubernetes.io/component" -}}{{ if .ContainerName }}/{{ .ContainerName -}}{{ end -}}{{ end -}}`
 	temp, err = buildServiceNameTemplate(cfg)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, temp)
 
 	cfg.Attributes.Kubernetes.ServiceNameTemplate = ""
 	temp, err = buildServiceNameTemplate(cfg)
 
 	assert.Nil(t, temp)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 }

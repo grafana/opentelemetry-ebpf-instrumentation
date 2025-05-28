@@ -161,7 +161,6 @@ func buildCommonContextInfo(
 	}
 
 	templ, err := buildServiceNameTemplate(config)
-
 	if err != nil {
 		return nil, err
 	}

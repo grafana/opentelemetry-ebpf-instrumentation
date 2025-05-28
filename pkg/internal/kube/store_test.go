@@ -525,19 +525,19 @@ func TestContainerInfoWithTemplate(t *testing.T) {
 	_ = store.On(&informer.Event{Type: informer.EventType_CREATED, Resource: &podMetaA1})
 	_ = store.On(&informer.Event{Type: informer.EventType_CREATED, Resource: &podMetaB})
 
-	assert.Equal(t, 2, len(store.containersByOwner))
+	assert.Len(t, store.containersByOwner, 2)
 
 	serviceKey := ownerID(podMetaA.Namespace, service.Name)
 	serviceContainers, ok := store.containersByOwner[serviceKey]
 	assert.True(t, ok)
-	assert.Equal(t, 4, len(serviceContainers))
+	assert.Len(t, serviceContainers, 4)
 
 	replicaSetKey := ownerID(podMetaB.Namespace, replicaSet.Name)
 	replicaSetContainers, ok := store.containersByOwner[replicaSetKey]
 	assert.True(t, ok)
-	assert.Equal(t, 2, len(replicaSetContainers))
+	assert.Len(t, replicaSetContainers, 2)
 
-	assert.Equal(t, 0, len(store.otelServiceInfoByIP))
+	assert.Empty(t, store.otelServiceInfoByIP)
 
 	t.Run("test with service attributes set", func(tt *testing.T) {
 		for _, ip := range []string{"169.0.0.1", "1.1.1.1", "3.1.1.1"} {
@@ -547,18 +547,18 @@ func TestContainerInfoWithTemplate(t *testing.T) {
 		}
 	})
 
-	assert.Equal(t, 3, len(store.otelServiceInfoByIP))
+	assert.Len(t, store.otelServiceInfoByIP, 3)
 	// Delete the pod which had good definition for the OTel variables.
 	// We expect much different service names now
 	_ = store.On(&informer.Event{Type: informer.EventType_DELETED, Resource: &podMetaA})
 	// We cleaned up the cache for service IPs. We must clean all of it
 	// otherwise there will be stale data left
-	assert.Equal(t, 0, len(store.otelServiceInfoByIP))
+	assert.Empty(t, store.otelServiceInfoByIP)
 
 	serviceKey = ownerID(podMetaA.Namespace, service.Name)
 	serviceContainers, ok = store.containersByOwner[serviceKey]
 	assert.True(t, ok)
-	assert.Equal(t, 2, len(serviceContainers))
+	assert.Len(t, serviceContainers, 2)
 
 	t.Run("test without service attributes set", func(tt *testing.T) {
 		// We removed the pod that defined the env variables
@@ -571,12 +571,12 @@ func TestContainerInfoWithTemplate(t *testing.T) {
 		assert.Equal(tt, "namespaceA", namespace)
 
 		name, namespace = store.ServiceNameNamespaceForIP("1.1.1.1")
-		assert.Equal(tt, "", name)
-		assert.Equal(tt, "", namespace)
+		assert.Empty(tt, name)
+		assert.Empty(tt, namespace)
 	})
 
 	// 3 again, because we cache that we can't see the IP in our info
-	assert.Equal(t, 3, len(store.otelServiceInfoByIP))
+	assert.Len(t, store.otelServiceInfoByIP, 3)
 
 	t.Run("test with only namespace attributes set", func(tt *testing.T) {
 		// We removed the pod that defined the env variables
@@ -589,12 +589,12 @@ func TestContainerInfoWithTemplate(t *testing.T) {
 		assert.Equal(tt, "boo", namespace)
 	})
 
-	assert.Equal(t, 5, len(store.otelServiceInfoByIP))
+	assert.Len(t, store.otelServiceInfoByIP, 5)
 
 	_ = store.On(&informer.Event{Type: informer.EventType_DELETED, Resource: &podMetaA1})
 	_ = store.On(&informer.Event{Type: informer.EventType_DELETED, Resource: &podMetaB})
 
-	assert.Equal(t, 0, len(store.otelServiceInfoByIP))
+	assert.Empty(t, store.otelServiceInfoByIP)
 
 	// No containers left
 	replicaSetKey = ownerID(podMetaB.Namespace, replicaSet.Name)
