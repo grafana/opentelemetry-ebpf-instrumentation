@@ -138,9 +138,7 @@ func buildServiceNameTemplate(config *beyla.Config) (*template.Template, error) 
 
 // BuildContextInfo populates some globally shared components and properties
 // from the user-provided configuration
-func buildCommonContextInfo(
-	ctx context.Context, config *beyla.Config,
-) (*global.ContextInfo, error) {
+func buildCommonContextInfo(ctx context.Context, config *beyla.Config) (*global.ContextInfo, error) {
 	// merging deprecated resource labels definition for backwards compatibility
 	resourceLabels := config.Attributes.Kubernetes.ResourceLabels
 	if resourceLabels == nil {
