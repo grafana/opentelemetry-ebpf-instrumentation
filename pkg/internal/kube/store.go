@@ -1,9 +1,11 @@
 package kube
 
 import (
+	"bytes"
 	"log/slog"
 	"strings"
 	"sync"
+	"text/template"
 
 	"github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/export/attributes"
 	attr "github.com/open-telemetry/opentelemetry-ebpf-instrumentation/pkg/export/attributes/names"
