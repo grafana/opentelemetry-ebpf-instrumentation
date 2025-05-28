@@ -469,10 +469,26 @@
           }
         ]
       },
+      "conn": {
+        "versions": {
+          "oldest": "1.40.0",
+          "newest": "1.72.1"
+        },
+        "offsets": [
+          {
+            "offset": 40,
+            "since": "1.40.0"
+          },
+          {
+            "offset": 48,
+            "since": "1.58.0"
+          }
+        ]
+      },
       "offset": {
         "versions": {
           "oldest": "1.40.0",
-          "newest": "1.72.2"
+          "newest": "1.72.1"
         },
         "offsets": [
           {
@@ -514,32 +530,16 @@
         },
         "offsets": [
           {
-            "offset": 340,
+            "offset": 64,
             "since": "1.40.0"
           },
           {
-            "offset": 348,
-            "since": "1.48.0"
-          },
-          {
-            "offset": 340,
-            "since": "1.51.0"
-          },
-          {
-            "offset": 412,
+            "offset": 136,
             "since": "1.52.0"
           },
           {
-            "offset": 404,
+            "offset": 128,
             "since": "1.58.0"
-          },
-          {
-            "offset": 432,
-            "since": "1.64.0"
-          },
-          {
-            "offset": 440,
-            "since": "1.68.0"
           }
         ]
       },
