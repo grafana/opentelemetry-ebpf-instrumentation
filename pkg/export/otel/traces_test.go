@@ -636,7 +636,8 @@ func TestTraceGrouping(t *testing.T) {
 	spans := []request.Span{}
 	start := time.Now()
 	for i := 0; i < 10; i++ {
-		span := request.Span{Type: request.EventTypeHTTP,
+		span := request.Span{
+			Type:         request.EventTypeHTTP,
 			RequestStart: start.UnixNano(),
 			Start:        start.Add(time.Second).UnixNano(),
 			End:          start.Add(3 * time.Second).UnixNano(),
@@ -662,9 +663,9 @@ func TestTraceGrouping(t *testing.T) {
 			},
 		}
 
-		receiver.processSpans(context.Background(), exporter, spans, attrs, sampler)
+		receiver.processSpans(t.Context(), exporter, spans, attrs, sampler)
 		// We should make only one trace, all spans under the same resource attributes
-		assert.Equal(t, 1, len(tr))
+		assert.Len(t, tr, 1)
 	})
 }
 
