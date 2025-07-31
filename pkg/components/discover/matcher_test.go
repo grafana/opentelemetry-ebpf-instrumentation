@@ -463,6 +463,9 @@ func TestCriteriaMatcher_Granular(t *testing.T) {
     exports: [metrics]
   - k8s_deployment_name: planet-service
     exports: [traces]
+    sampler:
+        name: traceidratio
+        arg: 0.5
   - k8s_deployment_name: satellite-service
     exports: []
   - k8s_deployment_name: star-service
@@ -547,6 +550,8 @@ func TestCriteriaMatcher_Granular(t *testing.T) {
 
 	assert.True(t, planetAttrs.ExportModes.CanExportTraces())
 	assert.False(t, planetAttrs.ExportModes.CanExportMetrics())
+	require.NotNil(t, planetAttrs.Sampler)
+	assert.Equal(t, "TraceIDRatioBased{0.5}", planetAttrs.Sampler.Description())
 
 	satelliteMatch := matches[1].Obj
 
@@ -556,6 +561,7 @@ func TestCriteriaMatcher_Granular(t *testing.T) {
 
 	assert.False(t, satelliteAttrs.ExportModes.CanExportTraces())
 	assert.False(t, satelliteAttrs.ExportModes.CanExportMetrics())
+	require.Nil(t, satelliteAttrs.Sampler)
 
 	starMatch := matches[2].Obj
 
@@ -565,6 +571,7 @@ func TestCriteriaMatcher_Granular(t *testing.T) {
 
 	assert.False(t, starAttrs.ExportModes.CanExportTraces())
 	assert.True(t, starAttrs.ExportModes.CanExportMetrics())
+	require.Nil(t, starAttrs.Sampler)
 
 	asteroidMatch := matches[3].Obj
 
@@ -574,4 +581,5 @@ func TestCriteriaMatcher_Granular(t *testing.T) {
 
 	assert.True(t, asteroidAttrs.ExportModes.CanExportTraces())
 	assert.True(t, asteroidAttrs.ExportModes.CanExportMetrics())
+	require.Nil(t, asteroidAttrs.Sampler)
 }
