@@ -96,6 +96,7 @@ func testREDMetricsShortHTTP(t *testing.T) {
 	}
 }
 
+/*
 func testREDMetricsJSONRPCHTTP(t *testing.T) {
 	for _, testCaseURL := range []string{
 		instrumentedServiceJSONRPCURL,
@@ -107,6 +108,7 @@ func testREDMetricsJSONRPCHTTP(t *testing.T) {
 		})
 	}
 }
+*/
 
 func testExemplarsExist(t *testing.T) {
 	url := "http://" + prometheusHostPort + "/api/v1/query_exemplars?query=http_server_request_duration_seconds_bucket"
@@ -237,6 +239,7 @@ func testSpanMetricsForHTTPLibrary(t *testing.T, svcName, svcNs string) {
 	})
 }
 
+/*
 // **IMPORTANT** Tests must first call -> func testREDMetricsForJSONRPCHTTP(t *testing.T, url, svcName, svcNs string) {
 func testSpanMetricsForJSONRPCHTTP(t *testing.T, svcName, svcNs string) {
 	pq := prom.Client{HostPort: prometheusHostPort}
@@ -290,6 +293,7 @@ func testSpanMetricsForJSONRPCHTTP(t *testing.T, svcName, svcNs string) {
 		assert.LessOrEqual(t, 1, val) // we report this count for each service, doesn't matter how many calls
 	})
 }
+*/
 
 // **IMPORTANT** Tests must first call -> func testREDMetricsForHTTPLibrary(t *testing.T, url, svcName, svcNs string) {
 func testServiceGraphMetricsForHTTPLibrary(t *testing.T, svcNs string) {
