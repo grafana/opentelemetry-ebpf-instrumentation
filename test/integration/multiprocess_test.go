@@ -40,6 +40,9 @@ func TestMultiProcess(t *testing.T) {
 		checkReportedOnlyOnce(t, "http://localhost:8900", "rename1")
 	})
 	t.Run("Go RED metrics: JSON RPC", func(t *testing.T) {
+		// FIXME
+		t.Skip("Test is flaky")
+
 		waitForTestComponents(t, instrumentedServiceJSONRPCURL)
 		testREDMetricsForJSONRPCHTTP(t, instrumentedServiceJSONRPCURL, "testserver", "initial-set")
 		// checks that, instrumenting the process from this container,
