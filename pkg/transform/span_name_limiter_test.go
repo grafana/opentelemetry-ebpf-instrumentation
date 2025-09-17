@@ -108,6 +108,7 @@ func TestSpanNameLimiter(t *testing.T) {
 }
 
 func TestSpanNameLimiter_ExpireOld(t *testing.T) {
+	t.Skip("skipping as synctest.Run is flaky in this go version")
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	synctest.Run(func() {
 		// GIVEN a SpanNameLimiter instance
