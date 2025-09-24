@@ -106,7 +106,7 @@ var DefaultConfig = Config{
 		Protocol:          otelcfg.ProtocolUnset,
 		TracesProtocol:    otelcfg.ProtocolUnset,
 		MaxQueueSize:      4096,
-		BatchTimeout:      60 * time.Second,
+		BatchTimeout:      15 * time.Second,
 		ReportersCacheLen: ReporterLRUSize,
 		Instrumentations: []string{
 			instrumentations.InstrumentationALL,
