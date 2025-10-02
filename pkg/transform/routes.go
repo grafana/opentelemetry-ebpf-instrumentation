@@ -138,7 +138,7 @@ func (rn *routerNode) provideRoutes(_ context.Context) (swarm.RunFunc, error) {
 
 				unmatchAction(rn, s)
 			}
-			out.Send(spans)
+			out.TrySend(spans)
 		})
 	}, nil
 }
