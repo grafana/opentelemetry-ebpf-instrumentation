@@ -367,6 +367,22 @@ func (p *Tracer) UProbes() map[string]map[string][]*ebpfcommon.ProbeDesc {
 				Start:    p.bpfObjects.ObiUprobeSslShutdown,
 			}},
 		},
+		"libSystem.Security.Cryptography.Native.OpenSsl.so": {
+			"CryptoNative_SslRead": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeSslRead,
+				End:      p.bpfObjects.ObiUretprobeSslRead,
+			}},
+			"CryptoNative_SslWrite": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeSslWrite,
+				End:      p.bpfObjects.ObiUretprobeSslWrite,
+			}},
+			"CryptoNative_SslShutdown": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeSslShutdown,
+			}},
+		},
 		"nginx": {
 			"ngx_http_upstream_init": {{ // on upstream dispatch
 				Required: false,
