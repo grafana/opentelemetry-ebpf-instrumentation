@@ -252,10 +252,6 @@ func (p *Tracer) KProbes() map[string]ebpfcommon.ProbeDesc {
 			Required: true,
 			Start:    p.bpfObjects.ObiKprobeSecuritySocketAccept,
 		},
-		"tcp_rcv_established": {
-			Required: true,
-			Start:    p.bpfObjects.ObiKprobeTcpRcvEstablished,
-		},
 		// Tracking of HTTP client calls, by tapping into connect
 		"sys_connect": {
 			Required: true,
