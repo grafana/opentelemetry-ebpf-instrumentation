@@ -1058,7 +1058,7 @@ func (r *metricsReporter) labelValuesTargetInfo(service *svc.Attrs) []string {
 		service.SDKLanguage.String(),
 		attr.VendorSDKName,
 		buildinfo.Version,
-		attr.VendorSDKName,
+		attr.VendorPrefix,
 		"linux",
 	}
 
