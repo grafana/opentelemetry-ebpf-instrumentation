@@ -91,7 +91,6 @@ spec:
         - name: otherinstance
           image: ghcr.io/open-telemetry/obi-testimg:gotestserver-net
           imagePullPolicy: IfNotPresent 
-          imagePullPolicy: Never # loaded into Kind from localhost
           ports:
             # exposing hostports to enable operation from tests
             - containerPort: 8080
