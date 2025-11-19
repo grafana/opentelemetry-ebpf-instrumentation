@@ -104,14 +104,15 @@ func setServiceEnvVariables(service svc.Attrs, envVars map[string]string, k8sEna
 	if k8sEnabled {
 		return service
 	}
+
 	if svcName, ok := service.EnvVars[envServiceName]; ok {
 		service.UID.Name = svcName
-	} else {
-		if result, ok := allVars[serviceNameKey]; ok {
-			service.UID.Name = result
-		} else if result, ok := allVars[serviceNamespaceKey]; ok {
-			service.UID.Namespace = result
-		}
+	} else if result, ok := allVars[serviceNameKey]; ok {
+		service.UID.Name = result
+	}
+
+	if result, ok := allVars[serviceNamespaceKey]; ok {
+		service.UID.Namespace = result
 	}
 
 	return service
