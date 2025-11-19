@@ -888,8 +888,6 @@ func (r *Metrics) record(span *request.Span, mr *MetricsReporter) {
 
 		if mr.cfg.SpanMetricsEnabled() {
 			sml, attrs := r.spanMetricsLatency.ForRecord(span, extraAttrs...)
-
-			fmt.Printf("*** attrs %v\n", attrs)
 			sml.Record(ctx, duration, instrument.WithAttributeSet(attrs))
 
 			smct, attrs := r.spanMetricsCallsTotal.ForRecord(span, extraAttrs...)
