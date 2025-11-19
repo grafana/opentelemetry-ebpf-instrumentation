@@ -82,6 +82,7 @@ type MetricsReporter struct {
 	is               instrumentations.InstrumentationSelection
 	targetMetrics    map[svc.UID]*TargetMetrics
 	attrGetters      attributes.NamedGetters[*request.Span, attribute.KeyValue]
+	spanExtraAttrs   []attr.Name
 
 	// user-selected fields for each of the reported metrics
 	attrHTTPDuration           []attributes.Field[*request.Span, attribute.KeyValue]
@@ -208,6 +209,11 @@ func newMetricsReporter(
 		userAttribSelection: selectorCfg.SelectionCfg,
 		log:                 mlog(),
 		attrGetters:         request.SpanOTELGetters(unresolved),
+	}
+
+	mr.spanExtraAttrs = []attr.Name{}
+	for _, label := range cfg.ExtraSpanResourceLabels {
+		mr.spanExtraAttrs = append(mr.spanExtraAttrs, attr.Name(label))
 	}
 
 	mr.createEventMetrics = mr.createTargetMetricData
@@ -874,12 +880,16 @@ func (r *Metrics) record(span *request.Span, mr *MetricsReporter) {
 	if otelSpanMetricsAccepted(span, mr) {
 		extraAttrs := []attribute.KeyValue{}
 
-		for k, v := range span.Service.Metadata {
-			extraAttrs = append(extraAttrs, k.OTEL().String(v))
+		for _, l := range mr.spanExtraAttrs {
+			if v, ok := span.Service.Metadata[l]; ok {
+				extraAttrs = append(extraAttrs, l.OTEL().String(v))
+			}
 		}
 
 		if mr.cfg.SpanMetricsEnabled() {
 			sml, attrs := r.spanMetricsLatency.ForRecord(span, extraAttrs...)
+
+			fmt.Printf("*** attrs %v\n", attrs)
 			sml.Record(ctx, duration, instrument.WithAttributeSet(attrs))
 
 			smct, attrs := r.spanMetricsCallsTotal.ForRecord(span, extraAttrs...)

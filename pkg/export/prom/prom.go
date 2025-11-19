@@ -136,6 +136,11 @@ type PrometheusConfig struct {
 	// beforehand. For example, to add the OTEL deployment.environment resource attribute as a Prometheus resource attribute,
 	// you should add `deployment.environment`.
 	ExtraResourceLabels []string `yaml:"extra_resource_attributes" env:"OTEL_EBPF_PROMETHEUS_EXTRA_RESOURCE_ATTRIBUTES" envSeparator:","`
+
+	// ExtraSpanResourceLabels adds extra metadata labels to Prometheus span metrics from sources whose availability can't be known
+	// beforehand. For example, to add the OTEL deployment.environment resource attribute as a Prometheus resource attribute,
+	// you should add `deployment.environment`.
+	ExtraSpanResourceLabels []string `yaml:"extra_span_resource_attributes" env:"OTEL_EBPF_PROMETHEUS_EXTRA_SPAN_RESOURCE_ATTRIBUTES" envSeparator:","`
 }
 
 func mlog() *slog.Logger {
@@ -196,10 +201,11 @@ func (p *PrometheusConfig) Enabled() bool {
 }
 
 type metricsReporter struct {
-	cfg                 *PrometheusConfig
-	extraMetadataLabels []attr.Name
-	input               <-chan []request.Span
-	processEvents       <-chan exec.ProcessEvent
+	cfg                     *PrometheusConfig
+	extraMetadataLabels     []attr.Name
+	extraSpanMetadataLabels []attr.Name
+	input                   <-chan []request.Span
+	processEvents           <-chan exec.ProcessEvent
 
 	beylaInfo              *Expirer[prometheus.Gauge]
 	httpDuration           *Expirer[prometheus.Histogram]
@@ -403,6 +409,7 @@ func newReporter(
 	// If service name is not explicitly set, we take the service name as set by the
 	// executable inspector
 	extraMetadataLabels := parseExtraMetadata(cfg.ExtraResourceLabels)
+	extraSpanMetadataLabels := parseExtraMetadata(cfg.ExtraSpanResourceLabels)
 	mr := &metricsReporter{
 		input:                      input.Subscribe(msg.SubscriberName("prom.InputSpans")),
 		processEvents:              processEventCh.Subscribe(msg.SubscriberName("prom.ProcessEvents")),
@@ -412,6 +419,7 @@ func newReporter(
 		cfg:                        cfg,
 		kubeEnabled:                kubeEnabled,
 		extraMetadataLabels:        extraMetadataLabels,
+		extraSpanMetadataLabels:    extraSpanMetadataLabels,
 		hostID:                     ctxInfo.HostID,
 		clock:                      clock,
 		is:                         is,
@@ -564,25 +572,25 @@ func newReporter(
 				NativeHistogramBucketFactor:     defaultHistogramBucketFactor,
 				NativeHistogramMaxBucketNumber:  defaultHistogramMaxBucketNumber,
 				NativeHistogramMinResetDuration: defaultHistogramMinResetDuration,
-			}, labelNamesSpans(kubeEnabled, extraMetadataLabels)).MetricVec, clock.Time, cfg.TTL)
+			}, labelNamesSpans(extraSpanMetadataLabels)).MetricVec, clock.Time, cfg.TTL)
 		}),
 		spanMetricsCallsTotal: optionalCounterProvider(cfg.SpanMetricsEnabled(), func() *Expirer[prometheus.Counter] {
 			return NewExpirer[prometheus.Counter](prometheus.NewCounterVec(prometheus.CounterOpts{
 				Name: cfg.spanMetricsCallsName(),
 				Help: "number of service calls in trace span metrics format",
-			}, labelNamesSpans(kubeEnabled, extraMetadataLabels)).MetricVec, clock.Time, cfg.TTL)
+			}, labelNamesSpans(extraSpanMetadataLabels)).MetricVec, clock.Time, cfg.TTL)
 		}),
 		spanMetricsRequestSizeTotal: optionalCounterProvider(cfg.SpanMetricsSizesEnabled(), func() *Expirer[prometheus.Counter] {
 			return NewExpirer[prometheus.Counter](prometheus.NewCounterVec(prometheus.CounterOpts{
 				Name: SpanMetricsRequestSizes,
 				Help: "size of service calls, in bytes, in trace span metrics format",
-			}, labelNamesSpans(kubeEnabled, extraMetadataLabels)).MetricVec, clock.Time, cfg.TTL)
+			}, labelNamesSpans(extraSpanMetadataLabels)).MetricVec, clock.Time, cfg.TTL)
 		}),
 		spanMetricsResponseSizeTotal: optionalCounterProvider(cfg.SpanMetricsSizesEnabled(), func() *Expirer[prometheus.Counter] {
 			return NewExpirer[prometheus.Counter](prometheus.NewCounterVec(prometheus.CounterOpts{
 				Name: SpanMetricsResponseSizes,
 				Help: "size of service responses, in bytes, in trace span metrics format",
-			}, labelNamesSpans(kubeEnabled, extraMetadataLabels)).MetricVec, clock.Time, cfg.TTL)
+			}, labelNamesSpans(extraSpanMetadataLabels)).MetricVec, clock.Time, cfg.TTL)
 		}),
 		tracesTargetInfo: optionalDirectGaugeProvider(cfg.AnySpanMetricsEnabled(), func() *prometheus.GaugeVec {
 			return prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -1004,7 +1012,7 @@ func appendK8sLabelValuesService(values []string, service *svc.Attrs) []string {
 	return values
 }
 
-func labelNamesSpans(kubeEnabled bool, extraMetadataLabelNames []attr.Name) []string {
+func labelNamesSpans(extraMetadataLabelNames []attr.Name) []string {
 	names := []string{
 		serviceNameKey,
 		serviceNamespaceKey,
@@ -1015,10 +1023,6 @@ func labelNamesSpans(kubeEnabled bool, extraMetadataLabelNames []attr.Name) []st
 		serviceJobKey,
 		sourceKey,
 		telemetryLanguageKey,
-	}
-
-	if kubeEnabled {
-		names = appendK8sLabelNames(names)
 	}
 
 	for _, mdn := range extraMetadataLabelNames {
@@ -1041,11 +1045,7 @@ func (r *metricsReporter) labelValuesSpans(span *request.Span) []string {
 		telemetryLanguageKey,
 	}
 
-	if r.kubeEnabled {
-		values = appendK8sLabelValuesService(values, &span.Service)
-	}
-
-	for _, k := range r.extraMetadataLabels {
+	for _, k := range r.extraSpanMetadataLabels {
 		values = append(values, span.Service.Metadata[k])
 	}
 
