@@ -564,25 +564,25 @@ func newReporter(
 				NativeHistogramBucketFactor:     defaultHistogramBucketFactor,
 				NativeHistogramMaxBucketNumber:  defaultHistogramMaxBucketNumber,
 				NativeHistogramMinResetDuration: defaultHistogramMinResetDuration,
-			}, labelNamesSpans()).MetricVec, clock.Time, cfg.TTL)
+			}, labelNamesSpans(kubeEnabled, extraMetadataLabels)).MetricVec, clock.Time, cfg.TTL)
 		}),
 		spanMetricsCallsTotal: optionalCounterProvider(cfg.SpanMetricsEnabled(), func() *Expirer[prometheus.Counter] {
 			return NewExpirer[prometheus.Counter](prometheus.NewCounterVec(prometheus.CounterOpts{
 				Name: cfg.spanMetricsCallsName(),
 				Help: "number of service calls in trace span metrics format",
-			}, labelNamesSpans()).MetricVec, clock.Time, cfg.TTL)
+			}, labelNamesSpans(kubeEnabled, extraMetadataLabels)).MetricVec, clock.Time, cfg.TTL)
 		}),
 		spanMetricsRequestSizeTotal: optionalCounterProvider(cfg.SpanMetricsSizesEnabled(), func() *Expirer[prometheus.Counter] {
 			return NewExpirer[prometheus.Counter](prometheus.NewCounterVec(prometheus.CounterOpts{
 				Name: SpanMetricsRequestSizes,
 				Help: "size of service calls, in bytes, in trace span metrics format",
-			}, labelNamesSpans()).MetricVec, clock.Time, cfg.TTL)
+			}, labelNamesSpans(kubeEnabled, extraMetadataLabels)).MetricVec, clock.Time, cfg.TTL)
 		}),
 		spanMetricsResponseSizeTotal: optionalCounterProvider(cfg.SpanMetricsSizesEnabled(), func() *Expirer[prometheus.Counter] {
 			return NewExpirer[prometheus.Counter](prometheus.NewCounterVec(prometheus.CounterOpts{
 				Name: SpanMetricsResponseSizes,
 				Help: "size of service responses, in bytes, in trace span metrics format",
-			}, labelNamesSpans()).MetricVec, clock.Time, cfg.TTL)
+			}, labelNamesSpans(kubeEnabled, extraMetadataLabels)).MetricVec, clock.Time, cfg.TTL)
 		}),
 		tracesTargetInfo: optionalDirectGaugeProvider(cfg.AnySpanMetricsEnabled(), func() *prometheus.GaugeVec {
 			return prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -1004,12 +1004,32 @@ func appendK8sLabelValuesService(values []string, service *svc.Attrs) []string {
 	return values
 }
 
-func labelNamesSpans() []string {
-	return []string{serviceNameKey, serviceNamespaceKey, spanNameKey, statusCodeKey, spanKindKey, serviceInstanceKey, serviceJobKey, sourceKey}
+func labelNamesSpans(kubeEnabled bool, extraMetadataLabelNames []attr.Name) []string {
+	names := []string{
+		serviceNameKey,
+		serviceNamespaceKey,
+		spanNameKey,
+		statusCodeKey,
+		spanKindKey,
+		serviceInstanceKey,
+		serviceJobKey,
+		sourceKey,
+		telemetryLanguageKey,
+	}
+
+	if kubeEnabled {
+		names = appendK8sLabelNames(names)
+	}
+
+	for _, mdn := range extraMetadataLabelNames {
+		names = append(names, mdn.Prom())
+	}
+
+	return names
 }
 
 func (r *metricsReporter) labelValuesSpans(span *request.Span) []string {
-	return []string{
+	values := []string{
 		span.Service.UID.Name,
 		span.Service.UID.Namespace,
 		span.TraceName(),
@@ -1018,7 +1038,18 @@ func (r *metricsReporter) labelValuesSpans(span *request.Span) []string {
 		span.Service.UID.Instance, // app instance ID
 		span.Service.Job(),
 		attr.VendorPrefix,
+		telemetryLanguageKey,
 	}
+
+	if r.kubeEnabled {
+		values = appendK8sLabelValuesService(values, &span.Service)
+	}
+
+	for _, k := range r.extraMetadataLabels {
+		values = append(values, span.Service.Metadata[k])
+	}
+
+	return values
 }
 
 func labelNamesTargetInfo(kubeEnabled bool, extraMetadataLabelNames []attr.Name) []string {
