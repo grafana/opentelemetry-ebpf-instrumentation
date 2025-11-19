@@ -1042,7 +1042,7 @@ func (r *metricsReporter) labelValuesSpans(span *request.Span) []string {
 		span.Service.UID.Instance, // app instance ID
 		span.Service.Job(),
 		attr.VendorPrefix,
-		telemetryLanguageKey,
+		span.Service.SDKLanguage.String(),
 	}
 
 	for _, k := range r.extraSpanMetadataLabels {
