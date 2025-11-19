@@ -771,6 +771,7 @@ func (mr *MetricsReporter) spanMetricAttributes() []attributes.Field[*request.Sp
 			attr.SpanName,
 			attr.StatusCode,
 			attr.Source,
+			attr.TelemetrySDKLanguage,
 		}),
 		// hostID is not taken from the span but common to the metrics reporter,
 		// so the getter is injected here directly
@@ -871,19 +872,25 @@ func (r *Metrics) record(span *request.Span, mr *MetricsReporter) {
 	}
 
 	if otelSpanMetricsAccepted(span, mr) {
+		extraAttrs := []attribute.KeyValue{}
+
+		for k, v := range span.Service.Metadata {
+			extraAttrs = append(extraAttrs, k.OTEL().String(v))
+		}
+
 		if mr.cfg.SpanMetricsEnabled() {
-			sml, attrs := r.spanMetricsLatency.ForRecord(span)
+			sml, attrs := r.spanMetricsLatency.ForRecord(span, extraAttrs...)
 			sml.Record(ctx, duration, instrument.WithAttributeSet(attrs))
 
-			smct, attrs := r.spanMetricsCallsTotal.ForRecord(span)
+			smct, attrs := r.spanMetricsCallsTotal.ForRecord(span, extraAttrs...)
 			smct.Add(ctx, 1, instrument.WithAttributeSet(attrs))
 		}
 
 		if mr.cfg.SpanMetricsSizesEnabled() {
-			smst, attrs := r.spanMetricsRequestSizeTotal.ForRecord(span)
+			smst, attrs := r.spanMetricsRequestSizeTotal.ForRecord(span, extraAttrs...)
 			smst.Add(ctx, float64(span.RequestBodyLength()), instrument.WithAttributeSet(attrs))
 
-			smst, attr := r.spanMetricsResponseSizeTotal.ForRecord(span)
+			smst, attr := r.spanMetricsResponseSizeTotal.ForRecord(span, extraAttrs...)
 			smst.Add(ctx, float64(span.ResponseBodyLength()), instrument.WithAttributeSet(attr))
 		}
 	}
