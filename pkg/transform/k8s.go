@@ -157,12 +157,11 @@ func (md *metadataDecorator) nodeLoop(ctx context.Context) {
 func (md *metadataDecorator) do(span *request.Span) {
 	if podMeta, containerName := md.db.PodContainerByPIDNs(span.Pid.Namespace); podMeta != nil {
 		AppendKubeMetadata(md.db, &span.Service, podMeta, md.clusterName, containerName)
-	} else {
-		if span.Service.Metadata == nil {
-			// do not leave the service attributes map as nil
-			span.Service.Metadata = map[attr.Name]string{}
-		}
+	} else if span.Service.Metadata == nil {
+		// do not leave the service attributes map as nil
+		span.Service.Metadata = map[attr.Name]string{}
 	}
+
 	// override the peer and host names from Kubernetes metadata, if found
 	if span.Host != "" {
 		if name, _ := md.db.ServiceNameNamespaceForIP(span.Host); name != "" {
