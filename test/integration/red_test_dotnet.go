@@ -100,7 +100,7 @@ func testREDMetricsForNetHTTPSLibrary(t *testing.T, url string, comm string) {
 		require.NoError(t, err)
 		enoughPromResults(t, results)
 		val := totalPromCount(t, results)
-		assert.LessOrEqual(t, 3, val)
+		assert.LessOrEqual(t, 2, val)
 	})
 }
 
