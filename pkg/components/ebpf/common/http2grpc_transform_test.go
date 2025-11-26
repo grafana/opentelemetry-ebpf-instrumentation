@@ -7,8 +7,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"go.opentelemetry.io/obi/pkg/components/ebpf/bhpack"
 	"golang.org/x/net/http2"
+
+	"go.opentelemetry.io/obi/pkg/components/ebpf/bhpack"
 )
 
 func TestHTTP2QuickDetection(t *testing.T) {
