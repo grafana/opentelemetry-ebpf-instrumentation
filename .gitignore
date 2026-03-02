@@ -84,8 +84,8 @@ internal/test/integration/components/pythonserver/lib/
 internal/test/integration/components/pythonserver/lib64
 internal/test/integration/components/pythonserver/pyvenv.cfg
 internal/test/integration/components/gosql/qosql
-*_bpfel.go
-*_bpfel.o
+#*_bpfel.go
+#*_bpfel.o
 *_bpfel.go.d
 *_bpfeb.go.d
 opentelemetry-ebpf-instrumentation.sln
