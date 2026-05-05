@@ -128,10 +128,16 @@ func newGraphBuilder(
 	// some nodes (ipNodesFilter, span name limiter...) are only passed to the metrics export nodes.
 	// Nodes directly handling raw traces will still get the unfiltered exportableSpans queue.
 	// If no metrics exporter is configured, we will not start the metrics subpipeline to save resources.
-	exportingMetrics := config.Metrics.Features.AnyAppO11yMetric() &&
+	jointMetricsConfig := joinMetricsConfig(config)
+	exportingAppMetrics := jointMetricsConfig.Features.AnyAppO11yMetric() &&
 		(config.OTELMetrics.EndpointEnabled() || config.Prometheus.EndpointEnabled())
-	if exportingMetrics {
+	if exportingAppMetrics {
 		setupMetricsSubPipeline(config, ctxInfo, swi, exportableSpans, selectorCfg, processEventsCh)
+	}
+	exportingRuntimeMetrics := jointMetricsConfig.Features.AppRuntime() &&
+		(config.OTELMetrics.EndpointEnabled() || config.Prometheus.EndpointEnabled())
+	if exportingRuntimeMetrics {
+		setupRuntimeMetricsPipeline(config, ctxInfo, swi, processEventsCh)
 	}
 
 	swi.Add(prom.BPFMetrics(ctxInfo, &config.Prometheus, joinMetricsConfig(config)),
@@ -197,6 +203,29 @@ func setupMetricsSubPipeline(
 		spanNameAggregatedMetrics,
 		processEventsCh,
 	), swarm.WithID("PrometheusEndpoint"))
+}
+
+func setupRuntimeMetricsPipeline(
+	config *obi.Config,
+	ctxInfo *global.ContextInfo,
+	swi *swarm.Instancer,
+	processEventsCh *msg.Queue[exec.ProcessEvent],
+) {
+	jointMetricsConfig := joinMetricsConfig(config)
+
+	swi.Add(otel.ReportRuntimeMetrics(
+		ctxInfo,
+		&config.OTELMetrics,
+		jointMetricsConfig,
+		processEventsCh,
+	), swarm.WithID("OTELRuntimeMetricsExport"))
+
+	swi.Add(prom.RuntimePrometheusEndpoint(
+		ctxInfo,
+		&config.Prometheus,
+		jointMetricsConfig,
+		processEventsCh,
+	), swarm.WithID("PrometheusRuntimeEndpoint"))
 }
 
 func (gb *graphFunctions) buildGraph(ctx context.Context) (*Instrumenter, error) {

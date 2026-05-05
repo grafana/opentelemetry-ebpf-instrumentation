@@ -692,12 +692,11 @@ func (mr *MetricsReporter) setupHostInfoMeter(meter instrument.Meter) error {
 
 func (mr *MetricsReporter) newMetricsInstance(service *svc.Attrs) Metrics {
 	mlog := mlog()
-	var resourceAttributes []attribute.KeyValue
 	if service != nil {
 		mlog = mlog.With("service", service)
-		resourceAttributes = append(otelcfg.GetAppResourceAttrs(&mr.nodeMeta, service), otelcfg.ResourceAttrsFromEnv(service)...)
 	}
 	mlog.Debug("creating new Metrics reporter")
+	resourceAttributes := AppResourceAttrsForService(&mr.nodeMeta, service)
 	resources := resource.NewWithAttributes(semconv.SchemaURL, resourceAttributes...)
 
 	opts := []metric.Option{
@@ -1118,7 +1117,16 @@ func (mr *MetricsReporter) resourceAttrsForService(service *svc.Attrs) []attribu
 		attribute.String(string(attr.Job), service.Job()),
 	}
 
-	attrs = append(attrs, otelcfg.GetAppResourceAttrs(&mr.nodeMeta, service)...)
+	return append(attrs, AppResourceAttrsForService(&mr.nodeMeta, service)...)
+}
+
+// AppResourceAttrsForService returns the OTEL resource attributes shared by app-level metrics.
+func AppResourceAttrsForService(nodeMeta *meta.NodeMeta, service *svc.Attrs) []attribute.KeyValue {
+	if service == nil {
+		return nil
+	}
+
+	attrs := otelcfg.GetAppResourceAttrs(nodeMeta, service)
 	return append(attrs, otelcfg.ResourceAttrsFromEnv(service)...)
 }
 

@@ -4,6 +4,8 @@
 package procs // import "go.opentelemetry.io/obi/pkg/internal/procs"
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -29,4 +31,28 @@ func LibPath(name string, maps []*procfs.ProcMap) *procfs.ProcMap {
 	}
 
 	return nil
+}
+
+// FindExeBaseAddr reads /proc/<pid>/maps to find the base virtual address
+// where the main executable is mapped. This is needed for PIE binaries where
+// ELF symbol addresses are relative to the load base.
+func FindExeBaseAddr(pid app.PID) (uint64, error) {
+	exeLink := fmt.Sprintf("/proc/%d/exe", pid)
+	exePath, err := os.Readlink(exeLink)
+	if err != nil {
+		return 0, fmt.Errorf("readlink exe: %w", err)
+	}
+
+	maps, err := FindLibMaps(pid)
+	if err != nil {
+		return 0, fmt.Errorf("read proc maps: %w", err)
+	}
+
+	for _, m := range maps {
+		if m.Pathname == exePath {
+			return uint64(m.StartAddr), nil
+		}
+	}
+
+	return 0, fmt.Errorf("executable mapping not found in /proc/%d/maps", pid)
 }

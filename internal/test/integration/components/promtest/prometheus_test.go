@@ -23,6 +23,7 @@ obi_network_flow_bytes_total{obi_ip="1.2.3.4",dst_port="1415",iface="fakeiface",
 # TYPE promhttp_metric_handler_errors_total counter
 promhttp_metric_handler_errors_total{cause="encoding"} 2
 promhttp_metric_handler_errors_total{cause="gathering"} 3
+go_goroutine_count 12
 			`))
 		if err != nil {
 			t.Error(err)
@@ -33,6 +34,7 @@ promhttp_metric_handler_errors_total{cause="gathering"} 3
 	scrapedMetrics, err := Scrape(server.URL)
 	require.NoError(t, err)
 	assert.Equal(t, []ScrapedMetric{
+		{Name: "go_goroutine_count", Value: 12, Labels: map[string]string{}},
 		{Name: "obi_network_flow_bytes_total", Value: 123.3, Labels: map[string]string{
 			"obi_ip": "1.2.3.4", "iface_direction": "ingress", "dst_port": "1011", "iface": "fakeiface", "src_port": "789", "transport": "TCP",
 		}},

@@ -53,6 +53,19 @@ func TestFeatureEnv_Separator(t *testing.T) {
 	assert.False(t, doc.Features.has(FeatureAll))
 }
 
+func TestApplicationRuntimeFeature(t *testing.T) {
+	doc := struct {
+		Features Features
+	}{}
+	require.NoError(t,
+		yaml.Unmarshal([]byte(`features: [application_runtime]`), &doc))
+
+	assert.True(t, doc.Features.AppRuntime())
+	assert.False(t, doc.Features.AnyAppO11yMetric())
+	assert.False(t, doc.Features.AppOrSpan())
+	assert.False(t, doc.Features.AppRED())
+}
+
 func TestFeatureEnv_All(t *testing.T) {
 	doc := struct {
 		Features Features `env:"FOO" envSeparator:","`

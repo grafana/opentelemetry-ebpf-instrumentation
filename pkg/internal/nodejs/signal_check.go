@@ -92,24 +92,7 @@ func hasUserSIGUSR1Handler(pid int, elfFile *elf.File) signalCheckResult {
 // where the main executable is mapped. This is needed for PIE binaries where
 // ELF symbol addresses are relative to the load base.
 func findExeBaseAddr(pid int) (uint64, error) {
-	exeLink := fmt.Sprintf("/proc/%d/exe", pid)
-	exePath, err := os.Readlink(exeLink)
-	if err != nil {
-		return 0, fmt.Errorf("readlink exe: %w", err)
-	}
-
-	maps, err := procs.FindLibMaps(app.PID(pid))
-	if err != nil {
-		return 0, fmt.Errorf("read proc maps: %w", err)
-	}
-
-	for _, m := range maps {
-		if m.Pathname == exePath {
-			return uint64(m.StartAddr), nil
-		}
-	}
-
-	return 0, fmt.Errorf("executable mapping not found in /proc/%d/maps", pid)
+	return procs.FindExeBaseAddr(app.PID(pid))
 }
 
 // walkTreeForSignal performs an iterative traversal of the libuv signal RB-tree

@@ -744,7 +744,6 @@ func newReporter(
 			}, labelNames(attrGenAIInputTokenUsage)).MetricVec, clock.Time, cfg.TTL)
 		}),
 	}
-
 	// testing aid
 	mr.deleteEventMetrics = mr.deleteTargetInfoMetrics
 	mr.createEventMetrics = mr.createTargetInfos
@@ -1236,8 +1235,18 @@ func labelNamesTargetInfo(kubeEnabled, dockerEnabled bool, nodeMeta *meta.NodeMe
 }
 
 func (r *metricsReporter) labelValuesTargetInfo(service *svc.Attrs) []string {
+	return labelValuesTargetInfo(service, &r.nodeMeta, r.kubeEnabled, r.dockerEnabled, r.extraMetadataLabels)
+}
+
+func labelValuesTargetInfo(
+	service *svc.Attrs,
+	nodeMeta *meta.NodeMeta,
+	kubeEnabled bool,
+	dockerEnabled bool,
+	extraMetadataLabels []attr.Name,
+) []string {
 	values := []string{
-		r.nodeMeta.HostID,
+		nodeMeta.HostID,
 		service.HostName,
 		service.UID.Name,
 		service.UID.Namespace,
@@ -1252,19 +1261,19 @@ func (r *metricsReporter) labelValuesTargetInfo(service *svc.Attrs) []string {
 		"linux",
 	}
 
-	if r.kubeEnabled {
+	if kubeEnabled {
 		values = appendK8sLabelValuesService(values, service)
 	}
 
-	if r.dockerEnabled {
+	if dockerEnabled {
 		values = appendDockerLabelValuesService(values, service)
 	}
 
-	for _, entry := range r.nodeMeta.Metadata {
+	for _, entry := range nodeMeta.Metadata {
 		values = append(values, entry.Value)
 	}
 
-	for _, k := range r.extraMetadataLabels {
+	for _, k := range extraMetadataLabels {
 		values = append(values, service.Metadata[k])
 	}
 
