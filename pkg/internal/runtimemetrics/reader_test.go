@@ -18,22 +18,19 @@ import (
 	"go.opentelemetry.io/obi/pkg/appolly/discover/exec"
 )
 
-func TestOpenExecutableELFReopensClosedFile(t *testing.T) {
+func TestOpenExecutableELFOpensReadable(t *testing.T) {
 	pid := app.PID(os.Getpid())
 	exePath := fmt.Sprintf("/proc/%d/exe", pid)
-	closedELF, err := elf.Open(exePath)
-	require.NoError(t, err)
-	require.NoError(t, closedELF.Close())
 
 	openedELF, closeELF, err := openExecutableELF(&exec.FileInfo{
 		Pid:            pid,
 		ProExeLinkPath: exePath,
-		ELF:            closedELF,
 	})
 	require.NoError(t, err)
 	defer closeELF()
 
 	assert.Equal(t, elf.ELFCLASS64, openedELF.Class)
+	require.NotEmpty(t, openedELF.Sections, "section table must be readable from the freshly opened ELF")
 }
 
 func TestReadHeapStats(t *testing.T) {
@@ -44,32 +41,35 @@ func TestReadHeapStats(t *testing.T) {
 			memstats: 512,
 		},
 		offsets: runtimeOffsets{
-			heapStatsStats:     64,
-			heapStatsDeltaSize: 256,
-			largeAlloc:         0,
-			largeAllocCount:    8,
-			smallAllocCount:    16,
-			largeFree:          96,
-			largeFreeCount:     104,
-			smallFreeCount:     112,
-			numSizeClasses:     3,
+			memstats: memstatsOffsets{heapStats: 64},
+			heapDelta: heapStatsDeltaOffsets{
+				stride:          256,
+				largeAlloc:      0,
+				largeAllocCount: 8,
+				smallAllocCount: 16,
+				largeFree:       96,
+				largeFreeCount:  104,
+				smallFreeCount:  112,
+				numSizeClasses:  3,
+			},
 		},
+		classToSize: []uint64{0, 8, 16},
 	}
 
-	stats := int(reader.symbols.memstats + uint64(reader.offsets.heapStatsStats))
-	put64(mem, stats+int(reader.offsets.largeAlloc), 1024)
-	put64(mem, stats+int(reader.offsets.largeAllocCount), 2)
-	put64(mem, stats+int(reader.offsets.smallAllocCount)+8, 3)
-	put64(mem, stats+int(reader.offsets.smallAllocCount)+16, 4)
-	put64(mem, stats+int(reader.offsets.largeFree), 99)
-	put64(mem, stats+int(reader.offsets.largeFreeCount), 1)
-	put64(mem, stats+int(reader.offsets.smallFreeCount)+8, 1)
+	stats := int(reader.symbols.memstats + uint64(reader.offsets.memstats.heapStats))
+	put64(mem, stats+int(reader.offsets.heapDelta.largeAlloc), 1024)
+	put64(mem, stats+int(reader.offsets.heapDelta.largeAllocCount), 2)
+	put64(mem, stats+int(reader.offsets.heapDelta.smallAllocCount)+8, 3)
+	put64(mem, stats+int(reader.offsets.heapDelta.smallAllocCount)+16, 4)
+	put64(mem, stats+int(reader.offsets.heapDelta.largeFree), 99)
+	put64(mem, stats+int(reader.offsets.heapDelta.largeFreeCount), 1)
+	put64(mem, stats+int(reader.offsets.heapDelta.smallFreeCount)+8, 1)
 
-	allocated, allocations, err := reader.readHeapStats(bytes.NewReader(mem))
+	hs, err := reader.readHeapStats(bytes.NewReader(mem))
 	require.NoError(t, err)
 
-	assert.Equal(t, uint64(1024+3*8+4*16), allocated)
-	assert.Equal(t, uint64(2+3+4), allocations)
+	assert.Equal(t, uint64(1024+3*8+4*16), hs.allocated)
+	assert.Equal(t, uint64(2+3+4), hs.allocations)
 }
 
 func TestReadGoroutineCount(t *testing.T) {
@@ -82,17 +82,19 @@ func TestReadGoroutineCount(t *testing.T) {
 			allp:    300,
 		},
 		offsets: runtimeOffsets{
-			schedGFreeStackSize:   0,
-			schedGFreeNoStackSize: 4,
-			schedNGSys:            8,
-			pGFreeSize:            16,
+			sched: schedOffsets{
+				gFreeStackSize:   0,
+				gFreeNoStackSize: 4,
+				ngsys:            8,
+			},
+			p: pOffsets{gFreeSize: 16},
 		},
 	}
 
 	put64(mem, int(reader.symbols.allglen), 10)
-	put32(mem, int(reader.symbols.sched+uint64(reader.offsets.schedGFreeStackSize)), 2)
-	put32(mem, int(reader.symbols.sched+uint64(reader.offsets.schedGFreeNoStackSize)), 1)
-	put32(mem, int(reader.symbols.sched+uint64(reader.offsets.schedNGSys)), 1)
+	put32(mem, int(reader.symbols.sched+uint64(reader.offsets.sched.gFreeStackSize)), 2)
+	put32(mem, int(reader.symbols.sched+uint64(reader.offsets.sched.gFreeNoStackSize)), 1)
+	put32(mem, int(reader.symbols.sched+uint64(reader.offsets.sched.ngsys)), 1)
 
 	allpData := uint64(512)
 	put64(mem, int(reader.symbols.allp), allpData)
@@ -103,8 +105,8 @@ func TestReadGoroutineCount(t *testing.T) {
 	p1 := uint64(800)
 	put64(mem, int(allpData), p0)
 	put64(mem, int(allpData)+8, p1)
-	put32(mem, int(p0)+int(reader.offsets.pGFreeSize), 1)
-	put32(mem, int(p1)+int(reader.offsets.pGFreeSize), 2)
+	put32(mem, int(p0)+int(reader.offsets.p.gFreeSize), 1)
+	put32(mem, int(p1)+int(reader.offsets.p.gFreeSize), 2)
 
 	got, err := reader.readGoroutineCount(bytes.NewReader(mem))
 	require.NoError(t, err)

@@ -32,14 +32,16 @@ type runtimeMetricsReporter struct {
 	dockerEnabled       bool
 	extraMetadataLabels []attr.Name
 
-	serviceMap      map[svc.UID]svc.Attrs
-	pidsTracker     otel.PidServiceTracker
-	runtimeReader   *runtimemetrics.Manager
-	processEvents   <-chan exec.ProcessEvent
-	memoryLimit     *prometheus.GaugeVec
-	memoryAllocated *prometheus.GaugeVec
+	serviceMap    map[svc.UID]svc.Attrs
+	pidsTracker   otel.PidServiceTracker
+	runtimeReader *runtimemetrics.Manager
+	processEvents <-chan exec.ProcessEvent
 
+	memoryLimit       *prometheus.GaugeVec
+	memoryAllocated   *prometheus.GaugeVec
 	memoryAllocations *prometheus.GaugeVec
+	memoryUsed        *prometheus.GaugeVec
+	memoryGCGoal      *prometheus.GaugeVec
 	memoryGCCycles    *prometheus.GaugeVec
 	goroutineCount    *prometheus.GaugeVec
 	processorLimit    *prometheus.GaugeVec
@@ -77,6 +79,7 @@ func newRuntimeMetricsReporter(
 
 	runtimeLabelNames := labelNamesTargetInfo(kubeEnabled, dockerEnabled, &ctxInfo.NodeMeta, extraMetadataLabels)
 	runtimeGCLabelNames := append(append([]string{}, runtimeLabelNames...), "gc_type")
+	runtimeMemoryLabelNames := append(append([]string{}, runtimeLabelNames...), "go_memory_type")
 
 	reporter := &runtimeMetricsReporter{
 		cfg:                 cfg,
@@ -101,6 +104,14 @@ func newRuntimeMetricsReporter(
 			Name: "go_memory_allocations_total",
 			Help: "Count of allocations to the heap by the application.",
 		}, runtimeLabelNames),
+		memoryUsed: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "go_memory_used_bytes",
+			Help: "Memory used by the Go runtime, broken down by go_memory_type.",
+		}, runtimeMemoryLabelNames),
+		memoryGCGoal: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "go_memory_gc_goal_bytes",
+			Help: "Heap size target for the end of the GC cycle.",
+		}, runtimeLabelNames),
 		memoryGCCycles: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "go_memory_gc_cycles_total",
 			Help: "Count of completed Go garbage collection cycles.",
@@ -123,6 +134,8 @@ func newRuntimeMetricsReporter(
 		reporter.memoryLimit,
 		reporter.memoryAllocated,
 		reporter.memoryAllocations,
+		reporter.memoryUsed,
+		reporter.memoryGCGoal,
 		reporter.memoryGCCycles,
 		reporter.goroutineCount,
 		reporter.processorLimit,
@@ -180,13 +193,20 @@ func (r *runtimeMetricsReporter) collectRuntimeMetrics() {
 		}
 		r.memoryAllocated.WithLabelValues(labels...).Set(float64(snapshot.MemoryAllocated))
 		r.memoryAllocations.WithLabelValues(labels...).Set(float64(snapshot.MemoryAllocations))
+		r.memoryUsed.WithLabelValues(append(labels, "stack")...).Set(float64(snapshot.MemoryUsedStack))
+		r.memoryUsed.WithLabelValues(append(labels, "other")...).Set(float64(snapshot.MemoryUsedOther))
+		r.memoryGCGoal.WithLabelValues(labels...).Set(float64(snapshot.MemoryGCGoal))
 		r.memoryGCCycles.WithLabelValues(append(labels, "automatic")...).Set(float64(snapshot.GCCyclesAutomatic))
 		if snapshot.GCCyclesForced > 0 {
 			r.memoryGCCycles.WithLabelValues(append(labels, "forced")...).Set(float64(snapshot.GCCyclesForced))
 		}
 		r.goroutineCount.WithLabelValues(labels...).Set(float64(snapshot.GoroutineCount))
 		r.processorLimit.WithLabelValues(labels...).Set(float64(snapshot.ProcessorLimit))
-		r.configGOGC.WithLabelValues(labels...).Set(float64(snapshot.GOGC))
+		if snapshot.GOGC != nil {
+			r.configGOGC.WithLabelValues(labels...).Set(float64(*snapshot.GOGC))
+		} else {
+			r.configGOGC.DeleteLabelValues(labels...)
+		}
 	}
 }
 
@@ -237,6 +257,9 @@ func (r *runtimeMetricsReporter) deleteRuntimeMetrics(service *svc.Attrs) {
 	r.memoryLimit.DeleteLabelValues(labels...)
 	r.memoryAllocated.DeleteLabelValues(labels...)
 	r.memoryAllocations.DeleteLabelValues(labels...)
+	r.memoryUsed.DeleteLabelValues(append(labels, "stack")...)
+	r.memoryUsed.DeleteLabelValues(append(labels, "other")...)
+	r.memoryGCGoal.DeleteLabelValues(labels...)
 	r.memoryGCCycles.DeleteLabelValues(append(labels, "automatic")...)
 	r.memoryGCCycles.DeleteLabelValues(append(labels, "forced")...)
 	r.goroutineCount.DeleteLabelValues(labels...)

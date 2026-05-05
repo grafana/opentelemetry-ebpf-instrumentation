@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"time"
 
 	"go.opentelemetry.io/obi/pkg/appolly/app"
+	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
 	"go.opentelemetry.io/obi/pkg/appolly/discover/exec"
 	"go.opentelemetry.io/obi/pkg/internal/procs"
 )
@@ -20,16 +22,9 @@ import (
 const (
 	pointerSize          = 8
 	smallAllocClassStart = 1
+	sizeClassByteWidth   = 2
+	maxConsecutiveFails  = 3
 )
-
-var sizeClassToSize = [...]uint64{
-	0, 8, 16, 24, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208,
-	224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 576, 640, 704,
-	768, 896, 1024, 1152, 1280, 1408, 1536, 1792, 2048, 2304, 2688, 3072,
-	3200, 3456, 4096, 4864, 5376, 6144, 6528, 6784, 6912, 8192, 9472, 9728,
-	10240, 10880, 12288, 13568, 14336, 16384, 18432, 19072, 20480, 21760,
-	24576, 27264, 28672, 32768,
-}
 
 type symbols struct {
 	memstats     uint64
@@ -38,45 +33,49 @@ type symbols struct {
 	allglen      uint64
 	allp         uint64
 	sched        uint64
+	classToSize  uint64
 }
 
 type Reader struct {
-	pid       app.PID
-	service   exec.FileInfo
-	byteOrder binary.ByteOrder
-	symbols   symbols
-	offsets   runtimeOffsets
+	pid              app.PID
+	service          svc.Attrs
+	byteOrder        binary.ByteOrder
+	symbols          symbols
+	offsets          runtimeOffsets
+	classToSize      []uint64
+	mem              *os.File
+	consecutiveFails int
 }
 
 func NewReader(file *exec.FileInfo) (*Reader, error) {
 	if file == nil {
-		return nil, errors.New("missing executable information")
+		return nil, errors.New("missing executable file info")
 	}
 
-	elfFile, closeELF, err := openExecutableELF(file)
+	ef, closeELF, err := openExecutableELF(file)
 	if err != nil {
 		return nil, err
 	}
 	defer closeELF()
 
-	if elfFile.Class != elf.ELFCLASS64 {
-		return nil, fmt.Errorf("unsupported Go ELF class %s", elfFile.Class)
+	if ef.Class != elf.ELFCLASS64 {
+		return nil, fmt.Errorf("unsupported Go ELF class %s", ef.Class)
 	}
 
 	baseAddr := uint64(0)
-	if elfFile.Type == elf.ET_DYN {
+	if ef.Type == elf.ET_DYN {
 		baseAddr, err = procs.FindExeBaseAddr(file.Pid)
 		if err != nil {
 			return nil, fmt.Errorf("reading executable base address: %w", err)
 		}
 	}
 
-	syms, err := runtimeSymbols(elfFile, baseAddr)
+	syms, err := runtimeSymbols(ef, baseAddr)
 	if err != nil {
 		return nil, err
 	}
 
-	dw, err := elfFile.DWARF()
+	dw, err := ef.DWARF()
 	if err != nil {
 		return nil, fmt.Errorf("reading DWARF offsets: %w", err)
 	}
@@ -88,167 +87,285 @@ func NewReader(file *exec.FileInfo) (*Reader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading runtime DWARF offsets: %w", err)
 	}
-	if offs.numSizeClasses > int64(len(sizeClassToSize)) {
-		return nil, fmt.Errorf("unsupported Go size class count %d", offs.numSizeClasses)
+
+	mem, err := os.Open(fmt.Sprintf("/proc/%d/mem", file.Pid))
+	if err != nil {
+		return nil, fmt.Errorf("opening /proc/%d/mem: %w", file.Pid, err)
+	}
+
+	classToSize, err := readClassToSize(mem, ef.ByteOrder, syms.classToSize, offs.heapDelta.numSizeClasses)
+	if err != nil {
+		_ = mem.Close()
+		return nil, err
 	}
 
 	return &Reader{
-		pid:       file.Pid,
-		service:   *file,
-		byteOrder: elfFile.ByteOrder,
-		symbols:   syms,
-		offsets:   offs,
+		pid:         file.Pid,
+		service:     file.Service,
+		byteOrder:   ef.ByteOrder,
+		symbols:     syms,
+		offsets:     offs,
+		classToSize: classToSize,
+		mem:         mem,
 	}, nil
 }
 
 func openExecutableELF(file *exec.FileInfo) (*elf.File, func(), error) {
-	if file.ProExeLinkPath != "" {
-		elfFile, err := elf.Open(file.ProExeLinkPath)
-		if err == nil {
-			return elfFile, func() { _ = elfFile.Close() }, nil
-		}
-		if file.ELF == nil {
-			return nil, nil, fmt.Errorf("opening executable ELF %s: %w", file.ProExeLinkPath, err)
-		}
+	path := file.ProExeLinkPath
+	if path == "" {
+		path = fmt.Sprintf("/proc/%d/exe", file.Pid)
 	}
+	ef, err := elf.Open(path)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("opening ELF %s: %w", path, err)
+	}
+	return ef, func() { _ = ef.Close() }, nil
+}
 
-	if file.ELF == nil {
-		return nil, nil, errors.New("missing executable ELF")
+func (r *Reader) Close() error {
+	if r.mem == nil {
+		return nil
 	}
-	return file.ELF, func() {}, nil
+	err := r.mem.Close()
+	r.mem = nil
+	return err
+}
+
+func readClassToSize(mem io.ReaderAt, byteOrder binary.ByteOrder, addr uint64, numSizeClasses int64) ([]uint64, error) {
+	if numSizeClasses <= 0 {
+		return nil, fmt.Errorf("invalid numSizeClasses %d from DWARF", numSizeClasses)
+	}
+	buf := make([]byte, numSizeClasses*sizeClassByteWidth)
+	if _, err := mem.ReadAt(buf, int64(addr)); err != nil {
+		return nil, fmt.Errorf("reading size-class table: %w", err)
+	}
+	sizes := make([]uint64, numSizeClasses)
+	for i := int64(0); i < numSizeClasses; i++ {
+		sizes[i] = uint64(byteOrder.Uint16(buf[i*sizeClassByteWidth:]))
+	}
+	return sizes, nil
 }
 
 func runtimeSymbols(f *elf.File, baseAddr uint64) (symbols, error) {
-	names := map[string]*uint64{}
 	var out symbols
-	names["runtime.memstats"] = &out.memstats
-	names["runtime.gcController"] = &out.gcController
-	names["runtime.gomaxprocs"] = &out.gomaxprocs
-	names["runtime.allglen"] = &out.allglen
-	names["runtime.allp"] = &out.allp
-	names["runtime.sched"] = &out.sched
+	required := map[string]*uint64{
+		"runtime.memstats":     &out.memstats,
+		"runtime.gcController": &out.gcController,
+		"runtime.gomaxprocs":   &out.gomaxprocs,
+		"runtime.allglen":      &out.allglen,
+		"runtime.allp":         &out.allp,
+		"runtime.sched":        &out.sched,
+	}
+	classToSizeAliases := []string{
+		"internal/runtime/gc.SizeClassToSize", // Go 1.21+
+		"runtime.class_to_size",               // older
+	}
 
 	read := func(syms []elf.Symbol) {
 		for _, sym := range syms {
-			dst, ok := names[sym.Name]
-			if !ok {
-				continue
+			if dst, ok := required[sym.Name]; ok && *dst == 0 {
+				*dst = baseAddr + sym.Value
 			}
-			*dst = baseAddr + sym.Value
+			for _, name := range classToSizeAliases {
+				if sym.Name == name && out.classToSize == 0 {
+					out.classToSize = baseAddr + sym.Value
+				}
+			}
 		}
 	}
 
 	if syms, err := f.Symbols(); err == nil {
 		read(syms)
 	} else if !errors.Is(err, elf.ErrNoSymbols) {
-		return symbols{}, fmt.Errorf("reading symbols: %w", err)
+		return symbols{}, err
 	}
 	if syms, err := f.DynamicSymbols(); err == nil {
 		read(syms)
 	} else if !errors.Is(err, elf.ErrNoSymbols) {
-		return symbols{}, fmt.Errorf("reading dynamic symbols: %w", err)
+		return symbols{}, err
 	}
 
-	for name, addr := range names {
+	for name, addr := range required {
 		if *addr == 0 {
 			return symbols{}, fmt.Errorf("runtime symbol %s not found", name)
 		}
+	}
+	if out.classToSize == 0 {
+		return symbols{}, fmt.Errorf("size-class table symbol not found (tried %v)", classToSizeAliases)
 	}
 	return out, nil
 }
 
 func (r *Reader) ReadSnapshot() (Snapshot, error) {
-	mem, err := os.Open(fmt.Sprintf("/proc/%d/mem", r.pid))
-	if err != nil {
-		return Snapshot{}, err
-	}
-	defer mem.Close()
-
-	allocated, allocations, err := r.readHeapStats(mem)
-	if err != nil {
-		return Snapshot{}, err
+	if r.mem == nil {
+		return Snapshot{}, errors.New("reader closed")
 	}
 
-	numGC, err := r.readUint32(mem, r.symbols.memstats+uint64(r.offsets.memstatsNumGC))
+	hs, err := r.readHeapStats(r.mem)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, r.observeFailure(err)
 	}
-	numForcedGC, err := r.readUint32(mem, r.symbols.memstats+uint64(r.offsets.memstatsNumForcedGC))
+
+	numGC, err := r.readUint32(r.mem, r.symbols.memstats+uint64(r.offsets.memstats.numGC))
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, r.observeFailure(err)
 	}
-	gomaxprocs, err := r.readInt32(mem, r.symbols.gomaxprocs)
+	numForcedGC, err := r.readUint32(r.mem, r.symbols.memstats+uint64(r.offsets.memstats.numForcedGC))
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, r.observeFailure(err)
 	}
-	gogc, err := r.readInt32(mem, r.symbols.gcController+uint64(r.offsets.gcPercent))
+	gomaxprocs, err := r.readInt32(r.mem, r.symbols.gomaxprocs)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, r.observeFailure(err)
 	}
-	memLimit, err := r.readInt64(mem, r.symbols.gcController+uint64(r.offsets.memoryLimit))
+	gcPercent, err := r.readInt32(r.mem, r.symbols.gcController+uint64(r.offsets.gcController.gcPercent))
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, r.observeFailure(err)
 	}
-	goroutines, err := r.readGoroutineCount(mem)
+	memLimit, err := r.readInt64(r.mem, r.symbols.gcController+uint64(r.offsets.gcController.memoryLimit))
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, r.observeFailure(err)
 	}
+	heapInUse, err := r.readUint64(r.mem, r.symbols.gcController+uint64(r.offsets.gcController.heapInUse))
+	if err != nil {
+		return Snapshot{}, r.observeFailure(err)
+	}
+	heapGoal, err := r.readUint64(r.mem, r.symbols.gcController+uint64(r.offsets.gcController.gcPercentHeapGoal))
+	if err != nil {
+		return Snapshot{}, r.observeFailure(err)
+	}
+	stacksSys, err := r.readUint64(r.mem, r.symbols.memstats+uint64(r.offsets.memstats.stacksSys))
+	if err != nil {
+		return Snapshot{}, r.observeFailure(err)
+	}
+	mspanSys, err := r.readUint64(r.mem, r.symbols.memstats+uint64(r.offsets.memstats.mspanSys))
+	if err != nil {
+		return Snapshot{}, r.observeFailure(err)
+	}
+	mcacheSys, err := r.readUint64(r.mem, r.symbols.memstats+uint64(r.offsets.memstats.mcacheSys))
+	if err != nil {
+		return Snapshot{}, r.observeFailure(err)
+	}
+	buckhashSys, err := r.readUint64(r.mem, r.symbols.memstats+uint64(r.offsets.memstats.buckhashSys))
+	if err != nil {
+		return Snapshot{}, r.observeFailure(err)
+	}
+	gcMiscSys, err := r.readUint64(r.mem, r.symbols.memstats+uint64(r.offsets.memstats.gcMiscSys))
+	if err != nil {
+		return Snapshot{}, r.observeFailure(err)
+	}
+	otherSys, err := r.readUint64(r.mem, r.symbols.memstats+uint64(r.offsets.memstats.otherSys))
+	if err != nil {
+		return Snapshot{}, r.observeFailure(err)
+	}
+	goroutines, err := r.readGoroutineCount(r.mem)
+	if err != nil {
+		return Snapshot{}, r.observeFailure(err)
+	}
+
+	r.consecutiveFails = 0
 
 	var limit *int64
-	if memLimit != MaxInt64 {
+	if memLimit < math.MaxInt64 {
 		limit = &memLimit
 	}
 
+	total := uint64(numGC)
 	forced := uint64(numForcedGC)
-	automatic := uint64(numGC)
-	if forced <= automatic {
-		automatic -= forced
+	if forced > total {
+		return Snapshot{}, fmt.Errorf("torn GC counter read (forced=%d > total=%d)", forced, total)
 	}
 
+	var gogc *int64
+	if gcPercent >= 0 {
+		v := int64(gcPercent)
+		gogc = &v
+	}
+
+	usedStack := saturatingAdd(uint64(hs.inStacks), stacksSys)
+	usedOther := heapInUse + mspanSys + mcacheSys + buckhashSys + gcMiscSys + otherSys + uint64(hs.inWorkBufs)
+
 	return Snapshot{
-		Service:           r.service.Service,
+		Service:           r.service,
 		PID:               r.pid,
 		Time:              time.Now(),
 		MemoryLimit:       limit,
-		MemoryAllocated:   allocated,
-		MemoryAllocations: allocations,
-		GCCyclesAutomatic: automatic,
+		MemoryAllocated:   hs.allocated,
+		MemoryAllocations: hs.allocations,
+		MemoryUsedStack:   usedStack,
+		MemoryUsedOther:   usedOther,
+		MemoryGCGoal:      heapGoal,
+		GCCyclesAutomatic: total - forced,
 		GCCyclesForced:    forced,
 		GoroutineCount:    goroutines,
 		ProcessorLimit:    int64(gomaxprocs),
-		GOGC:              int64(gogc),
+		GOGC:              gogc,
 	}, nil
 }
 
-func (r *Reader) readHeapStats(mem io.ReaderAt) (allocated uint64, allocations uint64, err error) {
-	var totalAllocated, totalAllocs uint64
-	statsAddr := r.symbols.memstats + uint64(r.offsets.heapStatsStats)
+func saturatingAdd(a, b uint64) uint64 {
+	if a > math.MaxUint64-b {
+		return math.MaxUint64
+	}
+	return a + b
+}
 
-	for gen := int64(0); gen < 3; gen++ {
-		base := statsAddr + uint64(gen*r.offsets.heapStatsDeltaSize)
-		largeAlloc, err := r.readUint64(mem, base+uint64(r.offsets.largeAlloc))
-		if err != nil {
-			return 0, 0, err
-		}
-		largeAllocCount, err := r.readUint64(mem, base+uint64(r.offsets.largeAllocCount))
-		if err != nil {
-			return 0, 0, err
-		}
-		totalAllocated += largeAlloc
-		totalAllocs += largeAllocCount
+func (r *Reader) failing() bool {
+	return r.consecutiveFails >= maxConsecutiveFails
+}
 
-		for i := int64(smallAllocClassStart); i < r.offsets.numSizeClasses; i++ {
-			size := sizeClassToSize[i]
-			allocCount, err := r.readUint64(mem, base+uint64(r.offsets.smallAllocCount+i*8))
+func (r *Reader) observeFailure(err error) error {
+	r.consecutiveFails++
+	return err
+}
+
+type heapStatsAggregate struct {
+	allocated   uint64
+	allocations uint64
+	inStacks    int64
+	inWorkBufs  int64
+}
+
+func (r *Reader) readHeapStats(mem io.ReaderAt) (heapStatsAggregate, error) {
+	statsAddr := r.symbols.memstats + uint64(r.offsets.memstats.heapStats)
+	stride := uint64(r.offsets.heapDelta.stride)
+
+	var out heapStatsAggregate
+	for gen := range numHeapStatGenerations {
+		base := statsAddr + uint64(gen)*stride
+		largeAlloc, err := r.readUint64(mem, base+uint64(r.offsets.heapDelta.largeAlloc))
+		if err != nil {
+			return heapStatsAggregate{}, err
+		}
+		largeAllocCount, err := r.readUint64(mem, base+uint64(r.offsets.heapDelta.largeAllocCount))
+		if err != nil {
+			return heapStatsAggregate{}, err
+		}
+		out.allocated += largeAlloc
+		out.allocations += largeAllocCount
+
+		for i := int64(smallAllocClassStart); i < r.offsets.heapDelta.numSizeClasses; i++ {
+			allocCount, err := r.readUint64(mem, base+uint64(r.offsets.heapDelta.smallAllocCount+i*8))
 			if err != nil {
-				return 0, 0, err
+				return heapStatsAggregate{}, err
 			}
-			totalAllocated += allocCount * size
-			totalAllocs += allocCount
+			out.allocated += allocCount * r.classToSize[i]
+			out.allocations += allocCount
 		}
+
+		inStacks, err := r.readInt64(mem, base+uint64(r.offsets.heapDelta.inStacks))
+		if err != nil {
+			return heapStatsAggregate{}, err
+		}
+		inWorkBufs, err := r.readInt64(mem, base+uint64(r.offsets.heapDelta.inWorkBufs))
+		if err != nil {
+			return heapStatsAggregate{}, err
+		}
+		out.inStacks += inStacks
+		out.inWorkBufs += inWorkBufs
 	}
 
-	return totalAllocated, totalAllocs, nil
+	return out, nil
 }
 
 func (r *Reader) readGoroutineCount(mem io.ReaderAt) (int64, error) {
@@ -256,15 +373,15 @@ func (r *Reader) readGoroutineCount(mem io.ReaderAt) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	freeStack, err := r.readInt32(mem, r.symbols.sched+uint64(r.offsets.schedGFreeStackSize))
+	freeStack, err := r.readInt32(mem, r.symbols.sched+uint64(r.offsets.sched.gFreeStackSize))
 	if err != nil {
 		return 0, err
 	}
-	freeNoStack, err := r.readInt32(mem, r.symbols.sched+uint64(r.offsets.schedGFreeNoStackSize))
+	freeNoStack, err := r.readInt32(mem, r.symbols.sched+uint64(r.offsets.sched.gFreeNoStackSize))
 	if err != nil {
 		return 0, err
 	}
-	ngsys, err := r.readInt32(mem, r.symbols.sched+uint64(r.offsets.schedNGSys))
+	ngsys, err := r.readInt32(mem, r.symbols.sched+uint64(r.offsets.sched.ngsys))
 	if err != nil {
 		return 0, err
 	}
@@ -283,7 +400,7 @@ func (r *Reader) readGoroutineCount(mem io.ReaderAt) (int64, error) {
 		if pp == 0 {
 			continue
 		}
-		free, err := r.readInt32(mem, pp+uint64(r.offsets.pGFreeSize))
+		free, err := r.readInt32(mem, pp+uint64(r.offsets.p.gFreeSize))
 		if err != nil {
 			return 0, err
 		}

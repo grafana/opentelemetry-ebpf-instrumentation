@@ -50,6 +50,8 @@ type RuntimeMetrics struct {
 	memoryLimit       instrument.Int64Gauge
 	memoryAllocated   instrument.Int64Gauge
 	memoryAllocations instrument.Int64Gauge
+	memoryUsed        instrument.Int64Gauge
+	memoryGCGoal      instrument.Int64Gauge
 	memoryGCCycles    instrument.Int64Gauge
 	goroutineCount    instrument.Int64Gauge
 	processorLimit    instrument.Int64Gauge
@@ -160,6 +162,14 @@ func setupRuntimeMeters(metrics *RuntimeMetrics, meter instrument.Meter) error {
 	if err != nil {
 		return fmt.Errorf("creating go memory allocations: %w", err)
 	}
+	metrics.memoryUsed, err = meter.Int64Gauge("go.memory.used", instrument.WithUnit("By"))
+	if err != nil {
+		return fmt.Errorf("creating go memory used: %w", err)
+	}
+	metrics.memoryGCGoal, err = meter.Int64Gauge("go.memory.gc.goal", instrument.WithUnit("By"))
+	if err != nil {
+		return fmt.Errorf("creating go memory gc goal: %w", err)
+	}
 	metrics.memoryGCCycles, err = meter.Int64Gauge("go.memory.gc.cycles", instrument.WithUnit("{cycle}"))
 	if err != nil {
 		return fmt.Errorf("creating go memory gc cycles: %w", err)
@@ -233,6 +243,11 @@ func recordRuntimeMetrics(ctx context.Context, metrics *RuntimeMetrics, snapshot
 	}
 	metrics.memoryAllocated.Record(ctx, int64(snapshot.MemoryAllocated))
 	metrics.memoryAllocations.Record(ctx, int64(snapshot.MemoryAllocations))
+	metrics.memoryUsed.Record(ctx, int64(snapshot.MemoryUsedStack),
+		instrument.WithAttributes(attribute.String("go.memory.type", "stack")))
+	metrics.memoryUsed.Record(ctx, int64(snapshot.MemoryUsedOther),
+		instrument.WithAttributes(attribute.String("go.memory.type", "other")))
+	metrics.memoryGCGoal.Record(ctx, int64(snapshot.MemoryGCGoal))
 	metrics.memoryGCCycles.Record(ctx, int64(snapshot.GCCyclesAutomatic),
 		instrument.WithAttributes(attribute.String("gc.type", "automatic")))
 	if snapshot.GCCyclesForced > 0 {
@@ -241,7 +256,11 @@ func recordRuntimeMetrics(ctx context.Context, metrics *RuntimeMetrics, snapshot
 	}
 	metrics.goroutineCount.Record(ctx, snapshot.GoroutineCount)
 	metrics.processorLimit.Record(ctx, snapshot.ProcessorLimit)
-	metrics.configGOGC.Record(ctx, snapshot.GOGC)
+	if snapshot.GOGC != nil {
+		metrics.configGOGC.Record(ctx, *snapshot.GOGC)
+	} else {
+		metrics.configGOGC.Remove(ctx)
+	}
 }
 
 func (r *RuntimeMetricsReporter) close() {

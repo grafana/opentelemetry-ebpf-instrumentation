@@ -71,9 +71,25 @@ func testRuntimeMetricsGoPrometheusCoverage(t *testing.T) {
 		{obiName: "go_memory_allocated_bytes", promName: "go_memstats_alloc_bytes_total", positive: true, description: "heap allocation"},
 		{obiName: "go_memory_allocations_total", promName: "go_memstats_mallocs_total", positive: true, description: "heap allocation count"},
 		{
+			obiName:     "go_memory_used_bytes",
+			obiLabels:   map[string]string{"go_memory_type": "stack"},
+			promName:    "go_memstats_stack_inuse_bytes",
+			positive:    true,
+			description: "in-use stack memory",
+		},
+		{
+			obiName:     "go_memory_used_bytes",
+			obiLabels:   map[string]string{"go_memory_type": "other"},
+			promName:    "go_memstats_heap_inuse_bytes",
+			positive:    true,
+			description: "in-use non-stack memory",
+		},
+		{obiName: "go_memory_gc_goal_bytes", promName: "go_gc_heap_goal_bytes", positive: true, description: "GC heap goal"},
+		{
 			obiName:     "go_memory_gc_cycles_total",
 			obiLabels:   map[string]string{"gc_type": "automatic"},
 			promName:    "go_gc_cycles_automatic_gc_cycles_total",
+			positive:    true,
 			description: "automatic GC cycle count",
 		},
 		{

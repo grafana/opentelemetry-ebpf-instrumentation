@@ -8,32 +8,60 @@ import (
 	"fmt"
 )
 
+const numHeapStatGenerations = 3 // runtime.consistentHeapStats.stats length
+
+type memstatsOffsets struct {
+	numGC       int64
+	numForcedGC int64
+	heapStats   int64
+	stacksSys   int64
+	mspanSys    int64
+	mcacheSys   int64
+	buckhashSys int64
+	gcMiscSys   int64
+	otherSys    int64
+}
+
+type heapStatsDeltaOffsets struct {
+	stride          int64
+	largeAlloc      int64
+	largeAllocCount int64
+	smallAllocCount int64
+	largeFree       int64
+	largeFreeCount  int64
+	smallFreeCount  int64
+	numSizeClasses  int64
+	inStacks        int64
+	inWorkBufs      int64
+}
+
+type gcControllerOffsets struct {
+	gcPercent         int64
+	memoryLimit       int64
+	heapInUse         int64
+	gcPercentHeapGoal int64
+}
+
+type schedOffsets struct {
+	gFreeStackSize   int64
+	gFreeNoStackSize int64
+	ngsys            int64
+}
+
+type pOffsets struct {
+	gFreeSize int64
+}
+
 type runtimeOffsets struct {
-	memstatsNumGC       int64
-	memstatsNumForcedGC int64
-
-	heapStatsStats     int64
-	heapStatsDeltaSize int64
-	largeAlloc         int64
-	largeAllocCount    int64
-	smallAllocCount    int64
-	largeFree          int64
-	largeFreeCount     int64
-	smallFreeCount     int64
-	numSizeClasses     int64
-
-	gcPercent   int64
-	memoryLimit int64
-
-	schedGFreeStackSize   int64
-	schedGFreeNoStackSize int64
-	schedNGSys            int64
-	pGFreeSize            int64
+	memstats     memstatsOffsets
+	heapDelta    heapStatsDeltaOffsets
+	gcController gcControllerOffsets
+	sched        schedOffsets
+	p            pOffsets
 }
 
 type dwarfInfo struct {
 	data    *dwarf.Data
-	types   map[dwarf.Offset]dwarf.Type
 	structs map[string]*dwarf.StructType
 }
 
@@ -41,7 +69,6 @@ func newDwarfInfo(data *dwarf.Data) (*dwarfInfo, error) {
 	r := data.Reader()
 	info := &dwarfInfo{
 		data:    data,
-		types:   map[dwarf.Offset]dwarf.Type{},
 		structs: map[string]*dwarf.StructType{},
 	}
 
@@ -61,7 +88,6 @@ func newDwarfInfo(data *dwarf.Data) (*dwarfInfo, error) {
 		if err != nil {
 			continue
 		}
-		info.types[ent.Offset] = typ
 		if st, ok := typ.(*dwarf.StructType); ok && st.StructName != "" {
 			info.structs[st.StructName] = st
 		}
@@ -119,88 +145,144 @@ func underlyingType(typ dwarf.Type) dwarf.Type {
 }
 
 func (i *dwarfInfo) runtimeOffsets() (runtimeOffsets, error) {
+	var out runtimeOffsets
+	if err := i.readMemstatsOffsets(&out.memstats); err != nil {
+		return runtimeOffsets{}, err
+	}
+	if err := i.readHeapStatsDeltaOffsets(&out.heapDelta); err != nil {
+		return runtimeOffsets{}, err
+	}
+	if err := i.readGCControllerOffsets(&out.gcController); err != nil {
+		return runtimeOffsets{}, err
+	}
+	if err := i.readSchedOffsets(&out.sched); err != nil {
+		return runtimeOffsets{}, err
+	}
+	if err := i.readPOffsets(&out.p); err != nil {
+		return runtimeOffsets{}, err
+	}
+	return out, nil
+}
+
+func (i *dwarfInfo) readMemstatsOffsets(out *memstatsOffsets) error {
 	memstats, err := i.structByName("runtime.mstats")
 	if err != nil {
-		return runtimeOffsets{}, err
+		return err
 	}
-	heapStats, err := i.structByName("runtime.consistentHeapStats")
-	if err != nil {
-		return runtimeOffsets{}, err
+	if out.numGC, _, err = i.fieldOffset(memstats, "numgc"); err != nil {
+		return err
 	}
+	if out.numForcedGC, _, err = i.fieldOffset(memstats, "numforcedgc"); err != nil {
+		return err
+	}
+	if out.heapStats, _, err = i.fieldOffset(memstats, "heapStats", "stats"); err != nil {
+		return err
+	}
+	if out.stacksSys, _, err = i.fieldOffset(memstats, "stacks_sys"); err != nil {
+		return err
+	}
+	if out.mspanSys, _, err = i.fieldOffset(memstats, "mspan_sys"); err != nil {
+		return err
+	}
+	if out.mcacheSys, _, err = i.fieldOffset(memstats, "mcache_sys"); err != nil {
+		return err
+	}
+	if out.buckhashSys, _, err = i.fieldOffset(memstats, "buckhash_sys"); err != nil {
+		return err
+	}
+	if out.gcMiscSys, _, err = i.fieldOffset(memstats, "gcMiscSys"); err != nil {
+		return err
+	}
+	if out.otherSys, _, err = i.fieldOffset(memstats, "other_sys"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (i *dwarfInfo) readHeapStatsDeltaOffsets(out *heapStatsDeltaOffsets) error {
 	heapStatsDelta, err := i.structByName("runtime.heapStatsDelta")
 	if err != nil {
-		return runtimeOffsets{}, err
+		return err
 	}
-	gcController, err := i.structByName("runtime.gcControllerState")
-	if err != nil {
-		return runtimeOffsets{}, err
-	}
-	sched, err := i.structByName("runtime.schedt")
-	if err != nil {
-		return runtimeOffsets{}, err
-	}
-	p, err := i.structByName("runtime.p")
-	if err != nil {
-		return runtimeOffsets{}, err
-	}
-
-	var out runtimeOffsets
-
-	if out.memstatsNumGC, _, err = i.fieldOffset(memstats, "numgc"); err != nil {
-		return runtimeOffsets{}, err
-	}
-	if out.memstatsNumForcedGC, _, err = i.fieldOffset(memstats, "numforcedgc"); err != nil {
-		return runtimeOffsets{}, err
-	}
-	if out.heapStatsStats, _, err = i.fieldOffset(memstats, "heapStats", "stats"); err != nil {
-		return runtimeOffsets{}, err
-	}
-
-	out.heapStatsDeltaSize = heapStatsDelta.ByteSize
+	out.stride = heapStatsDelta.ByteSize
 	if out.largeAlloc, _, err = i.fieldOffset(heapStatsDelta, "largeAlloc"); err != nil {
-		return runtimeOffsets{}, err
+		return err
 	}
 	if out.largeAllocCount, _, err = i.fieldOffset(heapStatsDelta, "largeAllocCount"); err != nil {
-		return runtimeOffsets{}, err
+		return err
 	}
 	if out.smallAllocCount, _, err = i.fieldOffset(heapStatsDelta, "smallAllocCount"); err != nil {
-		return runtimeOffsets{}, err
+		return err
 	}
 	if out.largeFree, _, err = i.fieldOffset(heapStatsDelta, "largeFree"); err != nil {
-		return runtimeOffsets{}, err
+		return err
 	}
 	if out.largeFreeCount, _, err = i.fieldOffset(heapStatsDelta, "largeFreeCount"); err != nil {
-		return runtimeOffsets{}, err
+		return err
 	}
-	var smallFreeType dwarf.Type
-	if out.smallFreeCount, smallFreeType, err = i.fieldOffset(heapStatsDelta, "smallFreeCount"); err != nil {
-		return runtimeOffsets{}, err
+	smallFreeOffset, smallFreeType, err := i.fieldOffset(heapStatsDelta, "smallFreeCount")
+	if err != nil {
+		return err
 	}
-	if arr, ok := underlyingType(smallFreeType).(*dwarf.ArrayType); ok {
-		out.numSizeClasses = arr.Count
-	} else {
-		return runtimeOffsets{}, fmt.Errorf("runtime.heapStatsDelta.smallFreeCount is %T, expected array", smallFreeType)
+	out.smallFreeCount = smallFreeOffset
+	arr, ok := underlyingType(smallFreeType).(*dwarf.ArrayType)
+	if !ok {
+		return fmt.Errorf("runtime.heapStatsDelta.smallFreeCount is %T, expected array", smallFreeType)
 	}
+	out.numSizeClasses = arr.Count
+	if out.inStacks, _, err = i.fieldOffset(heapStatsDelta, "inStacks"); err != nil {
+		return err
+	}
+	if out.inWorkBufs, _, err = i.fieldOffset(heapStatsDelta, "inWorkBufs"); err != nil {
+		return err
+	}
+	return nil
+}
 
+func (i *dwarfInfo) readGCControllerOffsets(out *gcControllerOffsets) error {
+	gcController, err := i.structByName("runtime.gcControllerState")
+	if err != nil {
+		return err
+	}
 	if out.gcPercent, _, err = i.fieldOffset(gcController, "gcPercent"); err != nil {
-		return runtimeOffsets{}, err
+		return err
 	}
 	if out.memoryLimit, _, err = i.fieldOffset(gcController, "memoryLimit"); err != nil {
-		return runtimeOffsets{}, err
+		return err
 	}
-	if out.schedGFreeStackSize, _, err = i.fieldOffset(sched, "gFree", "stack", "size"); err != nil {
-		return runtimeOffsets{}, err
+	if out.heapInUse, _, err = i.fieldOffset(gcController, "heapInUse"); err != nil {
+		return err
 	}
-	if out.schedGFreeNoStackSize, _, err = i.fieldOffset(sched, "gFree", "noStack", "size"); err != nil {
-		return runtimeOffsets{}, err
+	if out.gcPercentHeapGoal, _, err = i.fieldOffset(gcController, "gcPercentHeapGoal"); err != nil {
+		return err
 	}
-	if out.schedNGSys, _, err = i.fieldOffset(sched, "ngsys"); err != nil {
-		return runtimeOffsets{}, err
-	}
-	if out.pGFreeSize, _, err = i.fieldOffset(p, "gFree", "size"); err != nil {
-		return runtimeOffsets{}, err
-	}
+	return nil
+}
 
-	_ = heapStats
-	return out, nil
+func (i *dwarfInfo) readSchedOffsets(out *schedOffsets) error {
+	sched, err := i.structByName("runtime.schedt")
+	if err != nil {
+		return err
+	}
+	if out.gFreeStackSize, _, err = i.fieldOffset(sched, "gFree", "stack", "size"); err != nil {
+		return err
+	}
+	if out.gFreeNoStackSize, _, err = i.fieldOffset(sched, "gFree", "noStack", "size"); err != nil {
+		return err
+	}
+	if out.ngsys, _, err = i.fieldOffset(sched, "ngsys"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (i *dwarfInfo) readPOffsets(out *pOffsets) error {
+	p, err := i.structByName("runtime.p")
+	if err != nil {
+		return err
+	}
+	if out.gFreeSize, _, err = i.fieldOffset(p, "gFree", "size"); err != nil {
+		return err
+	}
+	return nil
 }

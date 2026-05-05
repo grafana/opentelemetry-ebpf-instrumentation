@@ -12,8 +12,6 @@ import (
 	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
 )
 
-const MaxInt64 = int64(^uint64(0) >> 1)
-
 type Snapshot struct {
 	Service svc.Attrs
 	PID     app.PID
@@ -22,9 +20,12 @@ type Snapshot struct {
 	MemoryLimit       *int64
 	MemoryAllocated   uint64
 	MemoryAllocations uint64
+	MemoryUsedStack   uint64
+	MemoryUsedOther   uint64
+	MemoryGCGoal      uint64
 	GCCyclesAutomatic uint64
 	GCCyclesForced    uint64
 	GoroutineCount    int64
 	ProcessorLimit    int64
-	GOGC              int64
+	GOGC              *int64
 }
