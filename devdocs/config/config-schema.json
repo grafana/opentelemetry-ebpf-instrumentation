@@ -1247,7 +1247,7 @@
         },
         "obfuscation_string": {
           "type": "string",
-          "description": "Is the replacement string used when a rule's action is \"obfuscate\"",
+          "description": "ObfuscationString is the replacement string used when a rule's action is \"obfuscate\"",
           "default": "***",
           "x-env-var": "OTEL_EBPF_HTTP_ENRICHMENT_OBFUSCATION_STRING"
         }
@@ -1264,6 +1264,10 @@
         "match": {
           "$ref": "#/$defs/HTTPParsingMatch",
           "description": "Defines the matching criteria for this rule"
+        },
+        "obfuscation_string": {
+          "type": "string",
+          "description": "Is the replacement string used when a rule's action is \"obfuscate\""
         },
         "scope": {
           "$ref": "#/$defs/HTTPParsingScope",

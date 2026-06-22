@@ -33,7 +33,7 @@ type HTTPEnricher struct {
 func NewHTTPEnricher(cfg config.EnrichmentConfig) *HTTPEnricher {
 	e := &HTTPEnricher{
 		policy:            cfg.Policy,
-		obfuscationString: cfg.Policy.ObfuscationString,
+		obfuscationString: cfg.Policy.DefaultObfuscationString,
 	}
 	for _, rule := range cfg.Rules {
 		switch rule.Type {
@@ -79,6 +79,16 @@ func (e *HTTPEnricher) Enrich(
 	return true
 }
 
+func (e *HTTPEnricher) preferredObfuscationString(rule *config.HTTPParsingRule) string {
+	obfuscationString := e.obfuscationString
+
+	if rule != nil && rule.ObfuscationString != nil {
+		obfuscationString = *rule.ObfuscationString
+	}
+
+	return obfuscationString
+}
+
 // processHeaders evaluates header rules and returns a map of headers to
 // include or obfuscate. The map is allocated lazily.
 func (e *HTTPEnricher) processHeaders(
@@ -88,14 +98,15 @@ func (e *HTTPEnricher) processHeaders(
 ) map[string][]string {
 	var result map[string][]string
 	for name, values := range headers {
-		action := e.resolveHeaderAction(name, scope, span)
+		action, rule := e.resolveHeaderAction(name, scope, span)
 		if action == config.HTTPParsingActionExclude {
 			continue
 		}
 		if result == nil {
 			result = make(map[string][]string)
 		}
-		applyHeaderAction(action, name, values, result, e.obfuscationString)
+
+		applyHeaderAction(action, name, values, result, e.preferredObfuscationString(rule))
 	}
 	return result
 }
@@ -106,7 +117,7 @@ func (e *HTTPEnricher) resolveHeaderAction(
 	headerName string,
 	scope config.HTTPParsingScope,
 	span *request.Span,
-) config.HTTPParsingAction {
+) (config.HTTPParsingAction, *config.HTTPParsingRule) {
 	var lowerName string
 
 	for _, rule := range e.headerRules {
@@ -122,11 +133,11 @@ func (e *HTTPEnricher) resolveHeaderAction(
 		}
 		for i := range rule.Match.Patterns {
 			if rule.Match.Patterns[i].MatchString(matchName) {
-				return rule.Action
+				return rule.Action, &rule
 			}
 		}
 	}
-	return e.policy.DefaultAction.Headers
+	return e.policy.DefaultAction.Headers, nil
 }
 
 // readRequestBody returns a function that reads and resets the request body.
@@ -173,13 +184,13 @@ func (e *HTTPEnricher) processBody(
 	hasExclude := false
 	var allJSONPaths []config.JSONPathExpr
 
-	matched := false
+	var matchedRule *config.HTTPParsingRule
 	for _, rule := range e.bodyRules {
 		if !ruleApplies(rule, scope, span) {
 			continue
 		}
 
-		matched = true
+		matchedRule = &rule
 		switch rule.Action {
 		case config.HTTPParsingActionExclude:
 			hasExclude = true
@@ -193,7 +204,7 @@ func (e *HTTPEnricher) processBody(
 	// Determine effective action
 	var effectiveAction config.HTTPParsingAction
 	switch {
-	case !matched:
+	case matchedRule == nil:
 		effectiveAction = e.policy.DefaultAction.Body
 	case hasExclude:
 		effectiveAction = config.HTTPParsingActionExclude
@@ -229,7 +240,7 @@ func (e *HTTPEnricher) processBody(
 	}
 
 	for i := range allJSONPaths {
-		if err := allJSONPaths[i].Expr().Set(parsed, e.obfuscationString); err != nil {
+		if err := allJSONPaths[i].Expr().Set(parsed, e.preferredObfuscationString(matchedRule)); err != nil {
 			// Unmatched paths are silently ignored — Set returns error only for structural issues
 			continue
 		}

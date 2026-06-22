@@ -42,7 +42,7 @@ func TestGenericParsingSpan_IncludeByDefault(t *testing.T) {
 				Headers: config.HTTPParsingActionInclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "*",
+			DefaultObfuscationString: "*",
 		},
 	}
 	span := &request.Span{Method: "GET", Path: "/test"}
@@ -66,7 +66,7 @@ func TestGenericParsingSpan_ExcludeByDefault(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "*",
+			DefaultObfuscationString: "*",
 		},
 	}
 	span := &request.Span{Method: "GET", Path: "/test"}
@@ -87,7 +87,7 @@ func TestGenericParsingSpan_IncludeRule(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "*",
+			DefaultObfuscationString: "*",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -122,7 +122,7 @@ func TestGenericParsingSpan_ObfuscateRule(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -148,6 +148,88 @@ func TestGenericParsingSpan_ObfuscateRule(t *testing.T) {
 	assert.False(t, hasContentType)
 }
 
+func ptr[T any](v T) *T { return &v }
+
+func TestGenericParsingSpan_ObfuscateRulePerRuleOverride(t *testing.T) {
+	cfg := config.EnrichmentConfig{
+		Enabled: true,
+		Policy: config.HTTPParsingPolicy{
+			DefaultAction: config.HTTPParsingDefaultAction{
+				Headers: config.HTTPParsingActionExclude,
+				Body:    config.HTTPParsingActionExclude,
+			},
+			DefaultObfuscationString: "***",
+		},
+		Rules: []config.HTTPParsingRule{
+			{
+				Action:            config.HTTPParsingActionObfuscate,
+				Type:              config.HTTPParsingRuleTypeHeaders,
+				Scope:             config.HTTPParsingScopeAll,
+				ObfuscationString: ptr("[RULE-REDACTED]"),
+				Match: config.HTTPParsingMatch{
+					Patterns: []services.GlobAttr{gi("Authorization")},
+				},
+			},
+			{
+				Action: config.HTTPParsingActionObfuscate,
+				Type:   config.HTTPParsingRuleTypeHeaders,
+				Scope:  config.HTTPParsingScopeAll,
+				Match: config.HTTPParsingMatch{
+					Patterns: []services.GlobAttr{gi("Cookie")},
+				},
+			},
+		},
+	}
+	span := &request.Span{Method: "GET", Path: "/test"}
+	req, resp := makeReqResp(
+		map[string]string{"Authorization": "Bearer secret-token", "Cookie": "session=abc"},
+		nil,
+	)
+
+	ok := NewHTTPEnricher(cfg).Enrich(span, req, resp)
+	require.True(t, ok)
+	// The Authorization rule overrides the policy obfuscation string.
+	assert.Equal(t, []string{"[RULE-REDACTED]"}, span.RequestHeaders["Authorization"])
+	// The Cookie rule has no override, so it falls back to the policy default.
+	assert.Equal(t, []string{"***"}, span.RequestHeaders["Cookie"])
+}
+
+func TestBodyExtraction_ObfuscatePerRuleOverride(t *testing.T) {
+	cfg := config.EnrichmentConfig{
+		Enabled: true,
+		Policy: config.HTTPParsingPolicy{
+			DefaultAction: config.HTTPParsingDefaultAction{
+				Headers: config.HTTPParsingActionExclude,
+				Body:    config.HTTPParsingActionExclude,
+			},
+			DefaultObfuscationString: "***",
+		},
+		Rules: []config.HTTPParsingRule{
+			{
+				Action:            config.HTTPParsingActionObfuscate,
+				Type:              config.HTTPParsingRuleTypeBody,
+				Scope:             config.HTTPParsingScopeAll,
+				ObfuscationString: ptr("[RULE-REDACTED]"),
+				Match: config.HTTPParsingMatch{
+					ObfuscationJSONPaths: []config.JSONPathExpr{jp("$.password")},
+				},
+			},
+		},
+	}
+	span := &request.Span{Method: "POST", Path: "/api/auth"}
+	req, resp := makeReqRespWithBody(
+		`{"username":"alice","password":"secret123"}`,
+		"",
+	)
+
+	ok := NewHTTPEnricher(cfg).Enrich(span, req, resp)
+	require.True(t, ok)
+	assert.Contains(t, span.RequestBodyContent, `"[RULE-REDACTED]"`)
+	assert.NotContains(t, span.RequestBodyContent, "secret123")
+	assert.NotContains(t, span.RequestBodyContent, "***")
+	assert.Contains(t, span.RequestBodyContent, `"alice"`)
+}
+
 func TestGenericParsingSpan_ScopeRequest(t *testing.T) {
 	cfg := config.EnrichmentConfig{
 		Enabled: true,
@@ -156,7 +238,7 @@ func TestGenericParsingSpan_ScopeRequest(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "*",
+			DefaultObfuscationString: "*",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -188,7 +270,7 @@ func TestGenericParsingSpan_ScopeResponse(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "*",
+			DefaultObfuscationString: "*",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -220,7 +302,7 @@ func TestGenericParsingSpan_CaseInsensitiveMatch(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "*",
+			DefaultObfuscationString: "*",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -252,7 +334,7 @@ func TestGenericParsingSpan_FirstMatchWins(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -293,7 +375,7 @@ func TestGenericParsingSpan_MultipleGlobsInRule(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "*",
+			DefaultObfuscationString: "*",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -328,7 +410,7 @@ func TestGenericParsingSpan_RuleOrderExcludeBeforeInclude(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "*",
+			DefaultObfuscationString: "*",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -366,7 +448,7 @@ func TestGenericParsingSpan_RuleOrderIncludeBeforeExclude(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "*",
+			DefaultObfuscationString: "*",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -404,7 +486,7 @@ func TestGenericParsingSpan_RuleOrderObfuscateBeforeInclude(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "[REDACTED]",
+			DefaultObfuscationString: "[REDACTED]",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -446,7 +528,7 @@ func TestGenericParsingSpan_ExplicitExcludeRule(t *testing.T) {
 				Headers: config.HTTPParsingActionInclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "*",
+			DefaultObfuscationString: "*",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -478,7 +560,7 @@ func TestGenericParsingSpan_MixedScopeRuleOrder(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -518,7 +600,7 @@ func TestGenericParsingSpan_MultipleHeaderValues(t *testing.T) {
 				Headers: config.HTTPParsingActionInclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 	}
 	span := &request.Span{Method: "GET", Path: "/test"}
@@ -564,7 +646,7 @@ func TestBodyExtraction_IncludeRawJSON(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -595,7 +677,7 @@ func TestBodyExtraction_ObfuscateJSONPaths(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -631,7 +713,7 @@ func TestBodyExtraction_ExcludeByDefault(t *testing.T) {
 				Headers: config.HTTPParsingActionInclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 	}
 	span := &request.Span{Method: "POST", Path: "/api/data"}
@@ -652,7 +734,7 @@ func TestBodyExtraction_NonJSONSkipped(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -682,7 +764,7 @@ func TestBodyExtraction_InvalidJSONSkipped(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -712,7 +794,7 @@ func TestBodyExtraction_ArrayElementRedaction(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "[REDACTED]",
+			DefaultObfuscationString: "[REDACTED]",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -748,7 +830,7 @@ func TestBodyExtraction_MergeMultipleRules(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -791,7 +873,7 @@ func TestBodyExtraction_RouteFiltering(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -828,7 +910,7 @@ func TestBodyExtraction_MethodFiltering(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -865,7 +947,7 @@ func TestBodyExtraction_ScopeRequestOnly(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -893,7 +975,7 @@ func TestBodyExtraction_UnmatchedPathsIgnored(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -924,7 +1006,7 @@ func TestBodyExtraction_ExcludeRuleOnRoute(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionInclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -961,7 +1043,7 @@ func TestBodyExtraction_ContentTypeVariants(t *testing.T) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -1123,7 +1205,7 @@ func BenchmarkHTTPEnricher_HeadersOnly(b *testing.B) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -1171,7 +1253,7 @@ func BenchmarkHTTPEnricher_BodyInclude_SmallJSON(b *testing.B) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -1208,7 +1290,7 @@ func BenchmarkHTTPEnricher_BodyObfuscate_SmallJSON(b *testing.B) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -1247,7 +1329,7 @@ func BenchmarkHTTPEnricher_BodyObfuscate_LargeJSON(b *testing.B) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
@@ -1291,7 +1373,7 @@ func BenchmarkHTTPEnricher_BodyExcludedByDefault(b *testing.B) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 	}
 
@@ -1320,7 +1402,7 @@ func BenchmarkHTTPEnricher_HeadersAndBody(b *testing.B) {
 				Headers: config.HTTPParsingActionExclude,
 				Body:    config.HTTPParsingActionExclude,
 			},
-			ObfuscationString: "***",
+			DefaultObfuscationString: "***",
 		},
 		Rules: []config.HTTPParsingRule{
 			{
