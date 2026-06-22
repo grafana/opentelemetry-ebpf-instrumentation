@@ -230,6 +230,72 @@ func TestBodyExtraction_ObfuscatePerRuleOverride(t *testing.T) {
 	assert.Contains(t, span.RequestBodyContent, `"alice"`)
 }
 
+func TestBodyExtraction_MultipleObfuscateRulesDistinctStrings(t *testing.T) {
+	cfg := config.EnrichmentConfig{
+		Enabled: true,
+		Policy: config.HTTPParsingPolicy{
+			DefaultAction: config.HTTPParsingDefaultAction{
+				Headers: config.HTTPParsingActionExclude,
+				Body:    config.HTTPParsingActionExclude,
+			},
+			DefaultObfuscationString: "***",
+		},
+		Rules: []config.HTTPParsingRule{
+			{
+				Action: config.HTTPParsingActionObfuscate,
+				Type:   config.HTTPParsingRuleTypeBody,
+				Scope:  config.HTTPParsingScopeRequest,
+				Match: config.HTTPParsingMatch{
+					ObfuscationJSONPaths: []config.JSONPathExpr{jp("$.password")},
+				},
+			},
+			{
+				Action:            config.HTTPParsingActionObfuscate,
+				Type:              config.HTTPParsingRuleTypeBody,
+				Scope:             config.HTTPParsingScopeRequest,
+				ObfuscationString: ptr("PCI"),
+				Match: config.HTTPParsingMatch{
+					ObfuscationJSONPaths: []config.JSONPathExpr{jp("$.cc")},
+				},
+			},
+			{
+				Action:            config.HTTPParsingActionObfuscate,
+				Type:              config.HTTPParsingRuleTypeBody,
+				Scope:             config.HTTPParsingScopeRequest,
+				ObfuscationString: ptr("PII"),
+				Match: config.HTTPParsingMatch{
+					ObfuscationJSONPaths: []config.JSONPathExpr{jp("$.ssn")},
+				},
+			},
+			// A trailing include rule that also matches — this must not clobber
+			// the obfuscation strings of the earlier obfuscate rules.
+			{
+				Action: config.HTTPParsingActionInclude,
+				Type:   config.HTTPParsingRuleTypeBody,
+				Scope:  config.HTTPParsingScopeRequest,
+				Match:  config.HTTPParsingMatch{},
+			},
+		},
+	}
+	span := &request.Span{Method: "POST", Path: "/api/users"}
+	req, resp := makeReqRespWithBody(
+		`{"password":"secret123","cc":"4111111111111111","ssn":"123-45-6789","name":"alice"}`,
+		"",
+	)
+
+	ok := NewHTTPEnricher(cfg).Enrich(span, req, resp)
+	require.True(t, ok)
+	val := span.RequestBodyContent
+	// Each obfuscate rule applies its own obfuscation string.
+	assert.Contains(t, val, `"password":"***"`)
+	assert.Contains(t, val, `"cc":"PCI"`)
+	assert.Contains(t, val, `"ssn":"PII"`)
+	assert.NotContains(t, val, "secret123")
+	assert.NotContains(t, val, "4111111111111111")
+	assert.NotContains(t, val, "123-45-6789")
+	assert.Contains(t, val, `"alice"`)
+}
+
 func TestGenericParsingSpan_ScopeRequest(t *testing.T) {
 	cfg := config.EnrichmentConfig{
 		Enabled: true,

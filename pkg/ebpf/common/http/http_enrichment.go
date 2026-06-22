@@ -28,6 +28,14 @@ type HTTPEnricher struct {
 	obfuscationString string
 }
 
+// bodyObfuscation pairs a JSONPath with the obfuscation string resolved from
+// the rule that contributed it, so per-rule obfuscation_string overrides are
+// preserved when multiple obfuscate rules match and merge.
+type bodyObfuscation struct {
+	path              config.JSONPathExpr
+	obfuscationString string
+}
+
 // NewHTTPEnricher creates an enricher from the given config, splitting
 // rules by type once so callers don't pay the filtering cost per request.
 func NewHTTPEnricher(cfg config.EnrichmentConfig) *HTTPEnricher {
@@ -179,36 +187,39 @@ func (e *HTTPEnricher) processBody(
 		return ""
 	}
 
-	// Collect all matching body rules
+	// Collect all matching body rules.
 	hasInclude := false
 	hasExclude := false
-	var allJSONPaths []config.JSONPathExpr
+	matched := false
+	var obfuscations []bodyObfuscation
 
-	var matchedRule *config.HTTPParsingRule
 	for _, rule := range e.bodyRules {
 		if !ruleApplies(rule, scope, span) {
 			continue
 		}
 
-		matchedRule = &rule
+		matched = true
 		switch rule.Action {
 		case config.HTTPParsingActionExclude:
 			hasExclude = true
 		case config.HTTPParsingActionInclude:
 			hasInclude = true
 		case config.HTTPParsingActionObfuscate:
-			allJSONPaths = append(allJSONPaths, rule.Match.ObfuscationJSONPaths...)
+			obfStr := e.preferredObfuscationString(&rule)
+			for _, p := range rule.Match.ObfuscationJSONPaths {
+				obfuscations = append(obfuscations, bodyObfuscation{path: p, obfuscationString: obfStr})
+			}
 		}
 	}
 
 	// Determine effective action
 	var effectiveAction config.HTTPParsingAction
 	switch {
-	case matchedRule == nil:
+	case !matched:
 		effectiveAction = e.policy.DefaultAction.Body
 	case hasExclude:
 		effectiveAction = config.HTTPParsingActionExclude
-	case len(allJSONPaths) > 0:
+	case len(obfuscations) > 0:
 		effectiveAction = config.HTTPParsingActionObfuscate
 	case hasInclude:
 		effectiveAction = config.HTTPParsingActionInclude
@@ -239,8 +250,8 @@ func (e *HTTPEnricher) processBody(
 		return ""
 	}
 
-	for i := range allJSONPaths {
-		if err := allJSONPaths[i].Expr().Set(parsed, e.preferredObfuscationString(matchedRule)); err != nil {
+	for i := range obfuscations {
+		if err := obfuscations[i].path.Expr().Set(parsed, obfuscations[i].obfuscationString); err != nil {
 			// Unmatched paths are silently ignored — Set returns error only for structural issues
 			continue
 		}
