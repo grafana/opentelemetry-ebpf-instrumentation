@@ -223,6 +223,13 @@ static __always_inline bool supports_pq_conn_cfg_hostname() {
 // SQL hostname extraction with driver type routing.
 // Uses conn_type to determine which driver-specific extraction to use or
 // attempts to extract hostname by trying supported database drivers
+// Sets the driver type based on the Go enum:
+// const (
+//	DBGeneric SQLKind = iota + 1
+//	DBPostgres
+//	DBMySQL
+//	DBMSSQL
+// )
 static __always_inline void extract_sql_hostname(sql_request_trace_t *trace,
                                                  u64 driver_conn_ptr,
                                                  void *goroutine_addr,
@@ -238,6 +245,7 @@ static __always_inline void extract_sql_hostname(sql_request_trace_t *trace,
         if (read_pgx_hostname_from_conn(
                 (void *)driver_conn_ptr, (char *)trace->hostname, sizeof(trace->hostname))) {
             bpf_dbg_printk("extracted pgx hostname: %s", trace->hostname);
+            trace->subtype = 2; // postgres
         }
         return;
     }
@@ -248,6 +256,7 @@ static __always_inline void extract_sql_hostname(sql_request_trace_t *trace,
             if (read_pq_hostname_from_pqconn(
                     pq_conn_ptr, (char *)trace->hostname, sizeof(trace->hostname))) {
                 bpf_dbg_printk("extracted lib/pq hostname from conn.cfg: %s", trace->hostname);
+                trace->subtype = 2; // postgres
                 return;
             }
         }
@@ -262,6 +271,7 @@ static __always_inline void extract_sql_hostname(sql_request_trace_t *trace,
             if (pq_hostname) {
                 __builtin_memcpy(trace->hostname, pq_hostname, sizeof(trace->hostname));
                 bpf_dbg_printk("extracted legacy lib/pq hostname: %s", trace->hostname);
+                trace->subtype = 2; // postgres
             }
         }
         return;
@@ -272,6 +282,7 @@ static __always_inline void extract_sql_hostname(sql_request_trace_t *trace,
         if (read_mysql_hostname_from_mysqlconn(
                 mysql_conn_ptr, (char *)trace->hostname, sizeof(trace->hostname))) {
             bpf_dbg_printk("extracted MySQL hostname: %s", trace->hostname);
+            trace->subtype = 3; // mysql
         }
         return;
     }
@@ -316,6 +327,7 @@ static __always_inline int process_sql_return(void *goroutine_addr, u8 error, u8
     if (trace) {
         task_pid(&trace->pid);
         trace->type = EVENT_SQL_CLIENT;
+        trace->subtype = 1; // db generic
         trace->start_monotime_ns = invocation->start_monotime_ns;
         trace->end_monotime_ns = bpf_ktime_get_ns();
 

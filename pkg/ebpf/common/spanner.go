@@ -127,15 +127,18 @@ func SQLRequestTraceToSpan(trace *SQLRequestTrace) request.Span {
 		hostname = hostname[:idx]
 	}
 
-	subType := request.DBGeneric
+	subType := trace.Subtype
 
-	switch hostPort {
-	case 5432:
-		subType = request.DBPostgres
-	case 3306:
-		subType = request.DBMySQL
-	case 1434:
-		subType = request.DBMSSQL
+	// if we didn't detect the type in Go, try heuristic detect
+	if subType == uint8(request.DBGeneric) {
+		switch hostPort {
+		case 5432:
+			subType = uint8(request.DBPostgres)
+		case 3306:
+			subType = uint8(request.DBMySQL)
+		case 1434:
+			subType = uint8(request.DBMSSQL)
+		}
 	}
 
 	return request.Span{
