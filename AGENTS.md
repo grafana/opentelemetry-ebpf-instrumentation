@@ -146,3 +146,4 @@ Comments must be minimal:
 - Respect verifier limitations and kernel compatibility.
 - Avoid patterns that increase verifier complexity or risk rejection.
 - Keep programs simple and predictable.
+- Security issues should be reported via [Grafana's security issue reporting page](https://grafana.com/legal/report-a-security-issue/) and not directly in this repository.
