@@ -93,7 +93,7 @@ func unloadInternalMaps(eventContext *common.EBPFEventContext) {
 
 func NewProcessTracer(tracerType ProcessTracerType, programs []Tracer, cfg *obi.Config, metrics imetrics.Reporter) *ProcessTracer {
 	return &ProcessTracer{
-		symbols:                   newSymbolCache(cfg.DynamicInstrumentation),
+		symbols:                   NewSymbolCache(cfg.DynamicInstrumentation),
 		log:                       ptlog().With("type", tracerType),
 		Programs:                  programs,
 		Type:                      tracerType,

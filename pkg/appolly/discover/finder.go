@@ -96,7 +96,7 @@ func (pf *ProcessFinder) Start(ctx context.Context, opts ...ProcessFinderStartOp
 			return nil, errors.New("dynamic instrumentation rules cannot be combined with an embedding application's dynamic PID selector")
 		}
 		dynamic = liveprober.New()
-		dynamic.Configure(pf.cfg.DynamicInstrumentation, func(result liveprober.ProbeResult, value float64) {
+		dynamic.Configure(pf.cfg.DynamicInstrumentation, ebpf.NewSymbolCache(pf.cfg.DynamicInstrumentation), func(result liveprober.ProbeResult, value float64) {
 			pf.ctxInfo.Metrics.DynamicProbe(result.ServiceName, result.ServiceNamespace, strconv.Itoa(result.PID), result.Function, value)
 		})
 		if err := dynamic.Run(ctx, pf.cfg.DynamicInstrumentation, pf.cfg.DynamicInstrumentationConfigPath); err != nil {

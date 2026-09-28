@@ -52,9 +52,10 @@ type ruleState struct {
 	results    []ProbeResult
 }
 
-func (m *Manager) Configure(cfg config.DynamicInstrumentationConfig, metric func(ProbeResult, float64)) {
+func (m *Manager) Configure(cfg config.DynamicInstrumentationConfig, symbols SymbolResolver, metric func(ProbeResult, float64)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.symbols = symbols
 	m.maxProbes = cfg.MaxProbes
 	m.requestTimeout = cfg.RequestTimeout
 	m.metric = metric

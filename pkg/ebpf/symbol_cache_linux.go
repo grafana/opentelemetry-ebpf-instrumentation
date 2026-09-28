@@ -36,21 +36,22 @@ type cachedSymbols struct {
 	bytes     int64
 }
 
-type symbolCache struct {
+// SymbolCache resolves executable functions without requiring an attached tracer.
+type SymbolCache struct {
 	mu                              sync.Mutex
 	entries                         *simplelru.LRU[symbolIdentity, cachedSymbols]
 	bytes, maxBytes, maxBinaryBytes int64
 }
 
-func newSymbolCache(cfg config.DynamicInstrumentationConfig) *symbolCache {
-	c := &symbolCache{maxBytes: cfg.SymbolCacheBytes, maxBinaryBytes: cfg.MaxCachedBinaryBytes}
+func NewSymbolCache(cfg config.DynamicInstrumentationConfig) *SymbolCache {
+	c := &SymbolCache{maxBytes: cfg.SymbolCacheBytes, maxBinaryBytes: cfg.MaxCachedBinaryBytes}
 	if cfg.SymbolCacheEntries > 0 && c.maxBytes > 0 && c.maxBinaryBytes > 0 {
 		c.entries, _ = simplelru.NewLRU[symbolIdentity, cachedSymbols](cfg.SymbolCacheEntries, func(_ symbolIdentity, v cachedSymbols) { c.bytes -= v.bytes })
 	}
 	return c
 }
 
-func (c *symbolCache) symbols(path string, ef *elf.File) (map[string]functionLocation, error) {
+func (c *SymbolCache) symbols(path string, ef *elf.File) (map[string]functionLocation, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	info, err := os.Stat(path)
@@ -116,6 +117,10 @@ func readFunctionSymbols(ef *elf.File) (map[string]functionLocation, error) {
 }
 
 func (pt *ProcessTracer) ResolveLiveSymbols(pid app.PID, pattern string) ([]string, error) {
+	return pt.symbols.ResolveLiveSymbols(pid, pattern)
+}
+
+func (c *SymbolCache) ResolveLiveSymbols(pid app.PID, pattern string) ([]string, error) {
 	matcher, err := glob.Compile(pattern)
 	if err != nil {
 		return nil, err
@@ -129,7 +134,7 @@ func (pt *ProcessTracer) ResolveLiveSymbols(pid app.PID, pattern string) ([]stri
 		return nil, err
 	}
 	defer ef.Close()
-	symbols, err := pt.symbols.symbols(path, ef)
+	symbols, err := c.symbols(path, ef)
 	if err != nil {
 		return nil, err
 	}

@@ -12,12 +12,14 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -91,8 +93,33 @@ func TestDynamicAPIConfigReload(t *testing.T) {
 		status, _, err := call(http.MethodGet, "/healthz", "")
 		return err == nil && status == http.StatusNoContent
 	}, 15*time.Second, 100*time.Millisecond)
+	symbolsPath := "/v1/dynamic-instrumentation/symbols?service=" + url.QueryEscape(fmt.Sprintf(`[{"target_pids":[%d]}]`, fixture.Process.Pid))
+	require.EventuallyWithT(t, func(t *assert.CollectT) {
+		status, data, err := call(http.MethodGet, symbolsPath, "")
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status, string(data))
+		var result struct {
+			Processes []struct {
+				PID     int      `json:"pid"`
+				Symbols []string `json:"symbols"`
+				Error   string   `json:"error"`
+			} `json:"processes"`
+		}
+		if !assert.NoError(t, json.Unmarshal(data, &result)) || !assert.Len(t, result.Processes, 1) {
+			return
+		}
+		assert.Equal(t, fixture.Process.Pid, result.Processes[0].PID)
+		assert.Empty(t, result.Processes[0].Error)
+		assert.Contains(t, result.Processes[0].Symbols, "main.outer")
+		assert.Contains(t, result.Processes[0].Symbols, "main.inner")
+		assert.Contains(t, result.Processes[0].Symbols, "main.HTTPHandler")
+	}, 15*time.Second, 100*time.Millisecond)
+	status, data, err := call(http.MethodGet, "/v1/dynamic-instrumentation/probes", "")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status, string(data))
+	require.JSONEq(t, `{"probes":[]}`, string(data), "listing symbols must not attach any probes")
 	rule := fmt.Sprintf(`{"service":[{"target_pids":[%d]}],"spans":[{"name":"api.call","on":{"function_span":"main.{outer,inner}"}}]}`, fixture.Process.Pid)
-	status, data, err := call(http.MethodPut, "/v1/dynamic-instrumentation/rules/api", rule)
+	status, data, err = call(http.MethodPut, "/v1/dynamic-instrumentation/rules/api", rule)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, status, string(data))
 	var response struct {

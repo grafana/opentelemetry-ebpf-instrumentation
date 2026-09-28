@@ -29,7 +29,7 @@ type resolvingTracer struct{ fakeTracer }
 
 func (*resolvingTracer) ResolveLiveSymbols(_ app.PID, pattern string) ([]string, error) {
 	switch pattern {
-	case "main.*":
+	case "*", "main.*":
 		return []string{"main.one", "main.two"}, nil
 	case "missing":
 		return nil, errors.New("symbol missing")

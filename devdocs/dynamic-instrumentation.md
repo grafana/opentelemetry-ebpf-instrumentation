@@ -85,6 +85,40 @@ curl --get http://127.0.0.1:8089/v1/dynamic-instrumentation/probes \
   --data-urlencode 'service=[{"target_pids":[1234]}]'
 ```
 
+List the available function symbols in the main executable of each matching
+process, using the same `service` selectors:
+
+```sh
+curl --get http://127.0.0.1:8089/v1/dynamic-instrumentation/symbols \
+  --data-urlencode 'service=[{"open_ports":"8081","k8s_namespace":"froggies-demo"}]'
+```
+
+The `service` array is required. This read-only endpoint works for processes OBI
+has discovered before any instrumentation rule or probe is attached. It returns
+all resolvable function names, including Go runtime symbols in stripped binaries,
+grouped by host PID and sorted by PID and symbol name:
+
+```json
+{
+  "processes": [
+    {
+      "pid": 1234,
+      "service_name": "testserver",
+      "service_namespace": "froggies-demo",
+      "symbols": ["main.HTTPHandler", "main.echo", "main.echoAsync"]
+    }
+  ]
+}
+```
+
+Use a returned name directly in `on.function_span` or `on.function_noret`.
+Service name and namespace are empty until OBI assigns the process a service.
+HTTP 200 with `{"processes":[]}` means no discovered process matches the filter.
+Invalid or missing selectors return HTTP 400. If a process exits, changes its
+executable, or its symbols cannot be read, HTTP 207 retains successful results
+and includes an `error` and an empty `symbols` array for each failed process.
+Attachment success is reported separately by the probes API.
+
 Remove a specific function, or a glob of functions, from matching processes:
 
 ```sh
@@ -129,7 +163,9 @@ input has no file to watch.
 Cache identity includes device, inode, size, and modification time. The per-binary
 limit measures symbol storage, not the executable's file size. Executables over
 the limit are parsed for each request and are not retained. Setting any cache
-limit to zero disables caching. Removing probes releases their links, decoding
+limit to zero disables caching. Symbol listing reuses a registered tracer's cache;
+processes without a tracer share a separate LRU with the same configured limits.
+Removing probes releases their links, decoding
 metadata, and reusable BPF specification slots. Process exit removes its probes.
 
 Internal metrics expose `obi.dynamic.probes` (Prometheus: `obi_dynamic_probes`),

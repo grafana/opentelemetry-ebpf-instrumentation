@@ -93,6 +93,7 @@ type attachment struct {
 }
 
 type Manager struct {
+	symbols        SymbolResolver
 	rules          map[string]ruleState
 	matches        map[int]ProcessMatcher
 	services       map[int]svc.UID

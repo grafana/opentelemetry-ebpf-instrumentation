@@ -19,7 +19,15 @@ func (pt *ProcessTracer) AttachLiveSpan(app.PID, uint32, *config.CustomSpanSpec,
 	return nil, errors.New("live probes require Linux")
 }
 
-type symbolCache struct{}
+type SymbolCache struct{}
+
+func NewSymbolCache(config.DynamicInstrumentationConfig) *SymbolCache {
+	return &SymbolCache{}
+}
+
+func (*SymbolCache) ResolveLiveSymbols(app.PID, string) ([]string, error) {
+	return nil, errors.New("symbol resolution requires Linux")
+}
 
 func (pt *ProcessTracer) ResolveLiveSymbols(_ app.PID, _ string) ([]string, error) {
 	return nil, errors.New("dynamic probes require Linux")

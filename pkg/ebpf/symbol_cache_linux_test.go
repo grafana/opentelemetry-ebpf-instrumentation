@@ -27,7 +27,7 @@ func TestSymbolCacheBudgetAndEviction(t *testing.T) {
 	cfg.SymbolCacheEntries = 1
 	cfg.SymbolCacheBytes = 1 << 30
 	cfg.MaxCachedBinaryBytes = 1 << 30
-	cache := newSymbolCache(cfg)
+	cache := NewSymbolCache(cfg)
 	symbols, err := cache.symbols(path, ef)
 	require.NoError(t, err)
 	require.NotEmpty(t, symbols)
@@ -46,7 +46,7 @@ func TestSymbolCacheBudgetAndEviction(t *testing.T) {
 	require.Equal(t, 1, cache.entries.Len())
 	require.Equal(t, cost, cache.bytes)
 	cfg.MaxCachedBinaryBytes = 1
-	uncached := newSymbolCache(cfg)
+	uncached := NewSymbolCache(cfg)
 	_, err = uncached.symbols(path, ef)
 	require.NoError(t, err)
 	require.Zero(t, uncached.entries.Len())
@@ -54,7 +54,7 @@ func TestSymbolCacheBudgetAndEviction(t *testing.T) {
 }
 
 func TestSymbolGlobResolution(t *testing.T) {
-	tracer := &ProcessTracer{symbols: newSymbolCache(config.DefaultDynamicInstrumentationConfig())}
+	tracer := &ProcessTracer{symbols: NewSymbolCache(config.DefaultDynamicInstrumentationConfig())}
 	names, err := tracer.ResolveLiveSymbols(app.PID(os.Getpid()), "*TestSymbol{GlobResolution,CacheBudgetAndEviction}")
 	require.NoError(t, err)
 	require.Len(t, names, 2)
@@ -63,4 +63,24 @@ func TestSymbolGlobResolution(t *testing.T) {
 	require.Equal(t, []string{names[0]}, exact)
 	_, err = tracer.ResolveLiveSymbols(app.PID(os.Getpid()), "no.such.function")
 	require.ErrorContains(t, err, "matched no symbols")
+}
+
+func TestSymbolListingUsesResolutionCache(t *testing.T) {
+	cfg := config.DefaultDynamicInstrumentationConfig()
+	cfg.SymbolCacheBytes = 1 << 30
+	cfg.MaxCachedBinaryBytes = 1 << 30
+	cache := NewSymbolCache(cfg)
+	pid := app.PID(os.Getpid())
+	names, err := cache.ResolveLiveSymbols(pid, "*")
+	require.NoError(t, err)
+	require.IsIncreasing(t, names)
+	name := "go.opentelemetry.io/obi/pkg/ebpf.TestSymbolListingUsesResolutionCache"
+	require.Contains(t, names, name)
+	require.Equal(t, 1, cache.entries.Len())
+	cost := cache.bytes
+	tracer := &ProcessTracer{symbols: cache}
+	resolved, err := tracer.ResolveLiveSymbols(pid, name)
+	require.NoError(t, err)
+	require.Equal(t, []string{name}, resolved)
+	require.Equal(t, cost, cache.bytes)
 }

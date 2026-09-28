@@ -100,18 +100,33 @@ func (m *Manager) dynamicRoutes(mux *http.ServeMux) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /v1/dynamic-instrumentation/probes", func(w http.ResponseWriter, r *http.Request) {
-		var criteria services.GlobDefinitionCriteria
-		if raw := r.URL.Query().Get("service"); raw != "" {
-			if err := decodeRuleJSON([]byte(raw), &criteria); err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
-			if err := criteria.Validate(); err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
+		criteria, err := queryServiceCriteria(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"probes": m.ListFunctions(criteria)})
+	})
+	mux.HandleFunc("GET /v1/dynamic-instrumentation/symbols", func(w http.ResponseWriter, r *http.Request) {
+		criteria, err := queryServiceCriteria(r)
+		if err == nil && len(criteria) == 0 {
+			err = errors.New("service selector is required")
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), m.requestTimeout)
+		defer cancel()
+		results := m.ListSymbols(ctx, criteria)
+		status := http.StatusOK
+		for _, result := range results {
+			if result.Error != "" {
+				status = http.StatusMultiStatus
+				break
+			}
+		}
+		writeJSON(w, status, map[string]any{"processes": results})
 	})
 	mux.HandleFunc("DELETE /v1/dynamic-instrumentation/probes", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
@@ -128,4 +143,14 @@ func (m *Manager) dynamicRoutes(mux *http.ServeMux) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+}
+
+func queryServiceCriteria(r *http.Request) (services.GlobDefinitionCriteria, error) {
+	var criteria services.GlobDefinitionCriteria
+	if raw := r.URL.Query().Get("service"); raw != "" {
+		if err := decodeRuleJSON([]byte(raw), &criteria); err != nil {
+			return nil, err
+		}
+	}
+	return criteria, criteria.Validate()
 }
