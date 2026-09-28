@@ -76,3 +76,5 @@ int GUARDED_PROG(obi_uprobe_h2FramerWriteContinuation_returns, struct pt_regs *,
 #include "generictracer/protocol_handler.c"
 
 char __license[] SEC("license") = "Dual MIT/GPL";
+
+#include <gotracer/go_dynamic_context.c>

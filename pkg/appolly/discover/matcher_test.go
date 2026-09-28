@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/obi/pkg/appolly/services"
 	attr "go.opentelemetry.io/obi/pkg/export/attributes/names"
 	"go.opentelemetry.io/obi/pkg/internal/testutil"
+	"go.opentelemetry.io/obi/pkg/liveprober"
 	"go.opentelemetry.io/obi/pkg/obi"
 	"go.opentelemetry.io/obi/pkg/pipe/msg"
 	"go.opentelemetry.io/obi/pkg/pipe/swarm"
@@ -1106,4 +1107,31 @@ func TestCriteriaMatcher_Granular(t *testing.T) {
 	assert.True(t, asteroidAttrs.ExportModes.CanExportTraces())
 	assert.True(t, asteroidAttrs.ExportModes.CanExportMetrics())
 	require.Nil(t, asteroidAttrs.Sampler)
+}
+
+func TestDynamicRuleSelectsAlreadyObservedProcess(t *testing.T) {
+	original := processInfo
+	t.Cleanup(func() { processInfo = original })
+	processInfo = func(attrs ProcessAttrs) (*services.ProcessInfo, error) {
+		return &services.ProcessInfo{Pid: attrs.pid, ExePath: "/bin/checkout", OpenPorts: []uint32{8080}}, nil
+	}
+	manager := liveprober.New()
+	t.Cleanup(func() { require.NoError(t, manager.Close()) })
+	matcher := &Matcher{
+		Log: slog.Default(), Dynamic: manager, HasHostPidAccess: true,
+		candidates: map[app.PID]ProcessAttrs{}, ProcessHistory: map[app.PID]ProcessMatch{},
+	}
+	process := ProcessAttrs{pid: 123, metadata: map[string]string{services.AttrNamespace: "shop", services.AttrPodName: "checkout-abc"}}
+	_, matched := matcher.filterCreated(process)
+	require.False(t, matched)
+	rule, err := liveprober.RuleJSON([]byte(`{"service":[{"open_ports":"8080","k8s_namespace":"shop","k8s_pod_name":"checkout-*"}],"spans":[{"name":"order","on":{"function_span":"main.order"}}]}`))
+	require.NoError(t, err)
+	_, err = manager.ApplyRule("rule", rule)
+	require.NoError(t, err)
+	event, matched := matcher.filterCreated(process)
+	require.True(t, matched)
+	require.Equal(t, app.PID(123), event.Obj.Process.Pid)
+	require.Len(t, event.Obj.Criteria, 1)
+	_, matched = matcher.filterCreated(process)
+	require.False(t, matched, "reevaluation must not duplicate the resident tracer")
 }

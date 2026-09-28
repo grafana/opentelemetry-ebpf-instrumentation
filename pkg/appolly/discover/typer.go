@@ -362,6 +362,9 @@ func (t *typer) inspectOffsets(execElf *exec.FileInfo) (*goexec.Offsets, bool, e
 		t.log.Debug("couldn't find go specific tracers", "error", err)
 		return nil, false, err
 	}
+	if t.cfg.DynamicInstrumentation.IsEnabled() {
+		ebpf.AddSDKContextOffsets(execElf.ELF(), offsets)
+	}
 	return offsets, true, nil
 }
 

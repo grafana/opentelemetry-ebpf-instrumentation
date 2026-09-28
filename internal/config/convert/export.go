@@ -58,6 +58,10 @@ func RuntimeToV2(cfg *obi.Config) (*schema.Document, *schema.Extension) {
 		},
 		Extensions: schema.Extensions{OBI: ext},
 	}
+	if cfg.DynamicInstrumentation.IsEnabled() {
+		dynamic := cfg.DynamicInstrumentation
+		doc.DynamicInstrumentation = &dynamic
+	}
 	doc.SetLogLevel(logLevel(cfg.LogLevel))
 
 	return doc, ext

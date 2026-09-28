@@ -197,3 +197,28 @@ func metricLabels(metric *dto.Metric) map[string]string {
 	}
 	return labels
 }
+
+func TestDynamicProbeMetricRemovedOnDetach(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	reporter := NewPrometheusReporter(&InternalMetricsConfig{}, nil, registry)
+	reporter.DynamicProbe("checkout", "shop", "123", "main.order", 1)
+	metrics, err := registry.Gather()
+	require.NoError(t, err)
+	var found bool
+	for _, metric := range metrics {
+		if metric.GetName() != "obi_dynamic_probes" {
+			continue
+		}
+		found = true
+		require.Len(t, metric.Metric, 1)
+		require.Equal(t, map[string]string{"service_name": "checkout", "service_namespace": "shop", "process_pid": "123", "code_function_name": "main.order"}, metricLabels(metric.Metric[0]))
+		require.InDelta(t, 1, metric.Metric[0].GetGauge().GetValue(), 0.001)
+	}
+	require.True(t, found)
+	reporter.DynamicProbe("checkout", "shop", "123", "main.order", 0)
+	metrics, err = registry.Gather()
+	require.NoError(t, err)
+	for _, metric := range metrics {
+		require.NotEqual(t, "obi_dynamic_probes", metric.GetName())
+	}
+}

@@ -166,6 +166,8 @@ typedef enum {
     // Go connection interface types
     _grpc_syscall_conn_type_addr,
     _tls_conn_type_addr,
+    _sdk_recording_span_context_pos,
+    _sdk_recording_span_type,
     _last_go_offset,
 } go_offset_const;
 

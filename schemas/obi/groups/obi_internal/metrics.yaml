@@ -432,3 +432,20 @@ groups:
     attributes:
       - ref: subscriber
         requirement_level: required
+
+  - id: metric.obi.obi.dynamic.probes
+    type: metric
+    metric_name: obi.dynamic.probes
+    instrument: gauge
+    unit: ""
+    stability: development
+    brief: Attached dynamic function probes by OpenTelemetry service and process.
+    attributes:
+      - ref: service.name
+        requirement_level: required
+      - ref: service.namespace
+        requirement_level: recommended
+      - ref: process.pid
+        requirement_level: required
+      - ref: code.function.name
+        requirement_level: required

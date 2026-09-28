@@ -777,6 +777,21 @@ Latency distribution of the eBPF probe in seconds.
 | `bpf.probe.name` | string | `required` | development | Name of the eBPF probe. | kprobe_tcp_sendmsg |
 | `bpf.probe.type` | string | `required` | development | eBPF program type of the probe. | kprobe; tracepoint |
 
+## `obi.dynamic.probes`
+
+Attached dynamic function probes by OpenTelemetry service and process.
+
+| Instrument | Unit | Stability |
+| --- | --- | --- |
+| gauge | 1 | development |
+
+| Attribute | Type | Requirement level | Stability | Description | Examples |
+| --- | --- | --- | --- | --- | --- |
+| `code.function.name` | string | `required` | stable | The method or function fully-qualified name without arguments. The value should fit the natural representation of the language runtime, which is also likely the same used within `code.stacktrace` attribute value. This attribute MUST NOT be used on the Profile signal since the data is already captured in 'message Function'. This constraint is imposed to prevent redundancy and maintain data integrity. | com.example.MyHttpService.serveRequest; GuzzleHttp\Client::transfer; fopen |
+| `process.pid` | int | `required` | development | Process identifier (PID). | 1234 |
+| `service.name` | string | `required` | stable | Logical name of the service. | shoppingcart |
+| `service.namespace` | string | `recommended` | stable | A namespace for `service.name`. | Shop |
+
 ## `obi.ebpf.tracer.flushes`
 
 Length of the groups of traces flushed from the eBPF tracer to the next pipeline stage.

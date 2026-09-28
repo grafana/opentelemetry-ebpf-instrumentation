@@ -191,9 +191,10 @@ discovery:
 	metaSources["service.namespace"] = []string{"huha.com/yeah"}
 
 	assert.Equal(t, &Config{
-		Exec:        cfg.Exec,
-		Port:        cfg.Port,
-		ServiceName: "svc-name",
+		DynamicInstrumentation: DefaultConfig.DynamicInstrumentation,
+		Exec:                   cfg.Exec,
+		Port:                   cfg.Port,
+		ServiceName:            "svc-name",
 
 		ChannelBufferLen:        33,
 		ChannelSendTimeout:      10 * time.Second,

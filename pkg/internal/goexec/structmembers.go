@@ -243,6 +243,8 @@ const (
 	// Go connection interface types
 	GrpcSyscallConnTypeAddress
 	TLSConnTypeAddress
+	SDKRecordingSpanContextPos
+	SDKRecordingSpanType
 )
 
 //go:embed offsets.json
@@ -605,6 +607,7 @@ var structMembers = map[string]structInfo{
 			"traceFlags": SpanContextTraceFlagsPos,
 		},
 	},
+	"go.opentelemetry.io/otel/sdk/trace.recordingSpan": {lib: "go.opentelemetry.io/otel/sdk", fields: map[string]GoOffset{"spanContext": SDKRecordingSpanContextPos}},
 	"go.opentelemetry.io/auto/sdk.span": {
 		lib: "go.opentelemetry.io/auto/sdk",
 		fields: map[string]GoOffset{

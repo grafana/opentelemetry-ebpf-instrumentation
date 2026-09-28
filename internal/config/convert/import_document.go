@@ -45,6 +45,9 @@ func DocumentToRuntime(src *schema.Document) (*obi.Config, error) {
 		return nil, err
 	}
 
+	if src.DynamicInstrumentation != nil {
+		cfg.DynamicInstrumentation = *src.DynamicInstrumentation
+	}
 	if err := applyV2Resource(cfg, src.Resource); err != nil {
 		return nil, err
 	}

@@ -13,6 +13,7 @@ Generated from [`config-schema.json`](config-schema.json).
 - [`attributes`](#attributes)
 - [`discovery`](#discovery)
 - [`dotnet_runtime_metrics`](#dotnet-runtime-metrics)
+- [`dynamic_instrumentation`](#dynamic-instrumentation)
 - [`ebpf`](#ebpf)
 - [`filter`](#filter)
 - [`health_check`](#health-check)
@@ -157,6 +158,22 @@ DiscoveryConfig for the discover.ProcessFinder pipeline
 |---|---|---|---|---|---|---|
 | `dotnet_runtime_metrics.sampling_interval` | `duration` | `OBI_DOTNET_RUNTIME_METRICS_SAMPLING_INTERVAL` | `1s` | `30s`, `5m`, `1ms`, etc |  | Sets the collection interval requested from System.Runtime EventCounters. It also sets the delay before reconnecting after a collection session ends. |
 | `dotnet_runtime_metrics.timeout` | `duration` | `OBI_DOTNET_RUNTIME_METRICS_TIMEOUT` | `10s` | `30s`, `5m`, `1ms`, etc |  | Bounds diagnostic IPC setup and EventPipe session shutdown. |
+
+## `dynamic_instrumentation`
+
+| YAML Path | Type | Env Var | Default | Values | Deprecated | Description |
+|---|---|---|---|---|---|---|
+| `dynamic_instrumentation.auth_token_file` | `string` | `OTEL_EBPF_DYNAMIC_INSTRUMENTATION_AUTH_TOKEN_FILE` |  |  |  |  |
+| `dynamic_instrumentation.enabled` | `boolean` | `OTEL_EBPF_DYNAMIC_INSTRUMENTATION_ENABLED` | `false` |  |  |  |
+| `dynamic_instrumentation.listen_address` | `string` | `OTEL_EBPF_DYNAMIC_INSTRUMENTATION_LISTEN_ADDRESS` |  |  |  |  |
+| `dynamic_instrumentation.max_cached_binary_bytes` | `integer` |  | `8388608` |  |  |  |
+| `dynamic_instrumentation.max_probes` | `integer` |  | `1024` |  |  |  |
+| `dynamic_instrumentation.request_timeout` | `duration` |  | `10s` | `30s`, `5m`, `1ms`, etc |  |  |
+| `dynamic_instrumentation.rules` | [`DynamicInstrumentationRule`](#dynamicinstrumentationrule)[] |  |  |  |  |  |
+| `dynamic_instrumentation.symbol_cache_bytes` | `integer` |  | `67108864` |  |  |  |
+| `dynamic_instrumentation.symbol_cache_entries` | `integer` |  | `32` |  |  |  |
+| `dynamic_instrumentation.ttl` | `duration` |  | `5m` | `30s`, `5m`, `1ms`, etc |  |  |
+| `dynamic_instrumentation.watch_interval` | `duration` |  | `1s` | `30s`, `5m`, `1ms`, etc |  |  |
 
 ## `ebpf`
 
@@ -664,6 +681,13 @@ Buckets defines the histograms bucket boundaries, and allows users to redefine t
 | `stat_tcp_rtt_histogram` | `number`[] |  |  |
 | `v8js_gc_duration_histogram` | `number`[] |  |  |
 
+### DynamicInstrumentationRule
+
+| Field | Type | Values | Description |
+|---|---|---|---|
+| `service` | [`GlobAttributes`](#globattributes)[] |  | GlobDefinitionCriteria allows defining a group of services to be instrumented according to a set of attributes. If a given executable/service matches multiple of the attributes, the earliest defined service will take precedence. |
+| `spans` | [`CustomSpanSpec`](#customspanspec)[] |  |  |
+
 ### ExtraGroupAttributesMap
 
 Map of attribute group names to arrays of attribute names. Supported keys are 'app' and 'k8s_app_meta'.
@@ -692,6 +716,7 @@ Map of attribute group names to arrays of attribute names. Supported keys are 'a
 | `k8s_pod_labels` | `map[string]string` |  | Allows matching against the labels of a pod |
 | `k8s_pod_name` | `glob` | `app-*`, `service-??`, `prod-*-db`, etc | Glob pattern to match against the attribute value |
 | `k8s_replicaset_name` | `glob` | `app-*`, `service-??`, `prod-*-db`, etc | Glob pattern to match against the attribute value |
+| `k8s_service_name` | `glob` | `app-*`, `service-??`, `prod-*-db`, etc | Glob pattern to match against the attribute value |
 | `k8s_statefulset_name` | `glob` | `app-*`, `service-??`, `prod-*-db`, etc | Glob pattern to match against the attribute value |
 | `languages` | `glob` | `app-*`, `service-??`, `prod-*-db`, etc | Language allows defining services to instrument based on the programming language they are written in. Use lowercase names, e.g. java,go |
 | `metrics` | [`SvcMetricsConfig`](#svcmetricsconfig) |  | Configuration that is custom for this service match |
@@ -768,6 +793,7 @@ RegexSelector that specify a given instrumented service. Each instance has to de
 | `k8s_pod_labels` | `map[string]string` |  | Allows matching against the labels of a pod |
 | `k8s_pod_name` | `regex` | `^app-.*`, `^service-..$`, `^prod-.*-db$`, etc | Regular expression to match against the executable file path |
 | `k8s_replicaset_name` | `regex` | `^app-.*`, `^service-..$`, `^prod-.*-db$`, etc | Regular expression to match against the executable file path |
+| `k8s_service_name` | `regex` | `^app-.*`, `^service-..$`, `^prod-.*-db$`, etc | Regular expression to match against the executable file path |
 | `k8s_statefulset_name` | `regex` | `^app-.*`, `^service-..$`, `^prod-.*-db$`, etc | Regular expression to match against the executable file path |
 | `languages` | `regex` | `^app-.*`, `^service-..$`, `^prod-.*-db$`, etc | Language allows defining services to instrument based on the programming language they are written in. |
 | `metrics` | [`SvcMetricsConfig`](#svcmetricsconfig) |  | Configuration that is custom for this service match |
@@ -793,6 +819,16 @@ SensitiveQueryParamsConfig controls which query-parameter keys are redacted. The
 |---|---|---|---|
 | `incoming` | `string`[] |  |  |
 | `outgoing` | `string`[] |  |  |
+
+### CustomSpanSpec
+
+CustomSpanSpec defines one span. Exactly one target key inside `on:` is required; modifiers (Paired, Match) apply only where noted.
+
+| Field | Type | Values | Description |
+|---|---|---|---|
+| `attrs` | `map[string]object` |  |  |
+| `name` | `string` |  |  |
+| `on` | [`CustomSpanTarget`](#customspantarget) |  | CustomSpanTarget enumerates probe-target options. Exactly one of {USDTNoRet, USDTSpan, FunctionNoRet, FunctionSpan} must be non-empty. |
 
 ### HTTPParsingMatch
 
@@ -824,6 +860,18 @@ SvcMetricsConfig is equivalent to GlobalMetricsConfig, but avoids defining envir
 |---|---|---|---|
 | `features` | `string`[] | `*`, `all`, `application`, `application_red`, `application_runtime`, `application_service_graph`, `application_sizes`, `application_span_otel`, `ebpf`, `network`, `network_flow_packets`, `network_inter_zone`, `stats`, `stats_tcp_failed_connections`, `stats_tcp_io`, `stats_tcp_retransmits`, `stats_tcp_rtt`, `stats_tcp_successful_connections`, `application_span` (deprecated), `application_span_sizes` (deprecated) | Specifies which metric features to export. Accepted values: application, network, application_span, application_service_graph, ... |
 
+### CustomSpanTarget
+
+CustomSpanTarget enumerates probe-target options. Exactly one of {USDTNoRet, USDTSpan, FunctionNoRet, FunctionSpan} must be non-empty.
+
+| Field | Type | Values | Description |
+|---|---|---|---|
+| `function_noret` | `string` |  | Attaches an entry uprobe only — zero-duration marker. Use for functions that never return (event loops, noreturn). |
+| `function_span` | `string` |  | Attaches an entry uprobe + uretprobe; emits a span whose duration is entry-to-return. |
+| `match` | [`CustomSpanMatch`](#customspanmatch) |  | Drops events whose probe arg at Match.Arg does not equal Match.Value (byte-for-byte). In-BPF filter; valid on any USDT shape. |
+| `usdt_noret` | `string` |  | Attaches a uprobe at a single stapsdt probe "<provider>:<name>"; each fire emits a zero-duration marker event. |
+| `usdt_span` | `string` |  | Is "<provider>:<base>"; OBI attaches at "<base>_start" and "<base>_end" and emits a span whose duration spans the two probes. Pairing correlates on arg_int[0]. |
+
 ### NumericRange
 
 NumericRange defines numeric comparison criteria for a rule match condition. All fields are optional; only the provided fields are evaluated.
@@ -836,3 +884,12 @@ NumericRange defines numeric comparison criteria for a rule match condition. All
 | `less_equals` | `integer` |  |  |
 | `less_than` | `integer` |  |  |
 | `not_equals` | `integer` |  |  |
+
+### CustomSpanMatch
+
+CustomSpanMatch filters events against a string-valued probe argument.
+
+| Field | Type | Values | Description |
+|---|---|---|---|
+| `arg` | `integer` |  |  |
+| `value` | `string` |  |  |

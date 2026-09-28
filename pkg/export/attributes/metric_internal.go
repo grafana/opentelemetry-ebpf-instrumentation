@@ -15,6 +15,7 @@ package attributes // import "go.opentelemetry.io/obi/pkg/export/attributes"
 // Unlike the metrics in metric.go these are not user-selectable, so they carry no Section:
 // nothing refers to them from an attributes.select group.
 type InternalMetrics struct {
+	DynamicProbes            Name
 	TracerFlushes            Name
 	OTELMetricExports        Name
 	OTELMetricExportErrors   Name
@@ -35,6 +36,7 @@ type InternalMetrics struct {
 
 func NewInternalMetrics(prefix string) InternalMetrics {
 	return InternalMetrics{
+		DynamicProbes: metric(Name{OTEL: prefix + ".dynamic.probes", Type: InstrumentGauge}),
 		TracerFlushes: metric(Name{
 			OTEL: prefix + ".ebpf.tracer.flushes",
 			Unit: "1",

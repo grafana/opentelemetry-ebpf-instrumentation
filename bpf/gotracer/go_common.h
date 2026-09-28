@@ -79,13 +79,7 @@ struct {
     __uint(max_entries, MAX_CONCURRENT_REQUESTS);
 } ongoing_client_connections SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, go_addr_key_t); // key: pointer to the goroutine
-    __type(value, tp_info_t);   // value: traceparent info
-    __uint(max_entries, MAX_CONCURRENT_SHARED_REQUESTS);
-    __uint(pinning, OBI_PIN_INTERNAL);
-} go_trace_map SEC(".maps");
+#include <maps/go_trace_map.h>
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);

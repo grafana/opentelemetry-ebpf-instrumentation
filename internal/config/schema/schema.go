@@ -28,8 +28,11 @@ import (
 
 	"github.com/mitchellh/copystructure"
 	"go.yaml.in/yaml/v3"
+	legacyyaml "gopkg.in/yaml.v3"
 
 	otelconfx "go.opentelemetry.io/contrib/otelconf/x"
+
+	"go.opentelemetry.io/obi/pkg/config"
 )
 
 const (
@@ -55,6 +58,7 @@ const (
 // declarative configuration sections are modeled by otelconf/x so OBI follows
 // the upstream schema surface instead of carrying a parallel local model.
 type Document struct {
+	DynamicInstrumentation               *config.DynamicInstrumentationConfig `yaml:"dynamic_instrumentation,omitempty"`
 	otelconfx.OpenTelemetryConfiguration `yaml:",inline"`
 	Extensions                           Extensions `yaml:"extensions"`
 	logLevelSet                          bool
@@ -69,7 +73,27 @@ func (d *Document) UnmarshalYAML(node *yaml.Node) error {
 		return err
 	}
 	_, logLevelSet := mappingValue(node, "log_level")
-	if err := node.Decode(&d.OpenTelemetryConfiguration); err != nil {
+	otelNode := *node
+	otelNode.Content = nil
+	for i := 0; i < len(node.Content); i += 2 {
+		if node.Content[i].Value != "dynamic_instrumentation" {
+			otelNode.Content = append(otelNode.Content, node.Content[i:i+2]...)
+		}
+	}
+	if dynamic, ok := mappingValue(node, "dynamic_instrumentation"); ok {
+		data, err := yaml.Marshal(dynamic)
+		if err != nil {
+			return err
+		}
+		cfg := config.DefaultDynamicInstrumentationConfig()
+		decoder := legacyyaml.NewDecoder(bytes.NewReader(data))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(&cfg); err != nil {
+			return err
+		}
+		d.DynamicInstrumentation = &cfg
+	}
+	if err := otelNode.Decode(&d.OpenTelemetryConfiguration); err != nil {
 		return err
 	}
 	if distribution, ok := mappingValue(node, "distribution"); ok {
@@ -94,7 +118,7 @@ func validateOpenTelemetryFields(node *yaml.Node) ([]string, error) {
 	var extensionFields []string
 	for i := 0; i < len(node.Content)-1; i += 2 {
 		field := node.Content[i].Value
-		if field == "extensions" {
+		if field == "extensions" || field == "dynamic_instrumentation" {
 			continue
 		}
 
@@ -225,6 +249,7 @@ func (d *Document) SetLogLevel(level otelconfx.SeverityNumber) {
 // unmarshaling in the upstream otelconf/x package.
 func (d Document) MarshalYAML() (any, error) {
 	value := struct {
+		DynamicInstrumentation     *config.DynamicInstrumentationConfig         `yaml:"dynamic_instrumentation,omitempty"`
 		AttributeLimits            *otelconfx.AttributeLimits                   `yaml:"attribute_limits,omitempty"`
 		Disabled                   otelconfx.OpenTelemetryConfigurationDisabled `yaml:"disabled,omitempty"`
 		Distribution               otelconfx.Distribution                       `yaml:"distribution,omitempty"`
@@ -238,6 +263,7 @@ func (d Document) MarshalYAML() (any, error) {
 		TracerProvider             *otelconfx.TracerProvider                    `yaml:"tracer_provider,omitempty"`
 		Extensions                 Extensions                                   `yaml:"extensions"`
 	}{
+		DynamicInstrumentation:     d.DynamicInstrumentation,
 		AttributeLimits:            d.AttributeLimits,
 		Disabled:                   d.Disabled,
 		Distribution:               d.Distribution,

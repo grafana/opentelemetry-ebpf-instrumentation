@@ -61,6 +61,7 @@ type InternalMetricsConfig struct {
 
 // Reporter of internal metrics
 type Reporter interface {
+	DynamicProbe(serviceName, serviceNamespace, pid, function string, value float64)
 	// Start the reporter
 	Start(ctx context.Context)
 	// TracerFlush is invoked every time the eBPF tracer flushes a group of len traces.
@@ -143,3 +144,5 @@ func (n NoopReporter) BpfInternalMetricsScrapeInterval() time.Duration          
 func (n NoopReporter) InformerLag(_ float64)                                                   {}
 func (n NoopReporter) BPFPacketStats(_, _ uint64)                                              {}
 func (n NoopReporter) QueueBufferUtilization(_ string, _ float64)                              {}
+
+func (NoopReporter) DynamicProbe(_, _, _, _ string, _ float64) {}

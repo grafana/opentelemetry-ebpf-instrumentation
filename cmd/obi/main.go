@@ -108,6 +108,10 @@ func main() {
 		configPath = &cfg
 	}
 	config, configVersion := loadConfig(configPath)
+	config.DynamicInstrumentationConfigPath = *configPath
+	if legacy := os.Getenv("OTEL_EBPF_LIVE_PROBER_LISTEN"); legacy != "" && config.DynamicInstrumentation.ListenAddress == "" {
+		config.DynamicInstrumentation.ListenAddress = legacy
+	}
 	if err := lvl.UnmarshalText([]byte(config.LogLevel)); err != nil {
 		slog.Error("unknown log level specified, choices are [DEBUG, INFO, WARN, ERROR]", "error", err)
 		os.Exit(-1)

@@ -7,6 +7,8 @@ import (
 	"context"
 	"log/slog"
 	"runtime"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,6 +33,7 @@ const internalMetricsMeterName = "obi_internal"
 
 // InternalMetricsReporter is an internal metrics Reporter that exports to OTEL
 type InternalMetricsReporter struct {
+	dynamicProbes                    *sync.Map
 	ctx                              context.Context
 	tracerFlushes                    instrument.Float64Histogram
 	otelMetricExports                instrument.Float64Counter
@@ -122,6 +125,19 @@ func NewInternalMetricsReporter(ctx context.Context, ctxInfo *global.ContextInfo
 		return nil, err
 	}
 
+	dynamicProbes := &sync.Map{}
+	_, err = meter.Int64ObservableGauge(internalNames.DynamicProbes.OTEL,
+		instrument.WithDescription("Attached dynamic function probes by OpenTelemetry service and process"),
+		instrument.WithInt64Callback(func(_ context.Context, observer instrument.Int64Observer) error {
+			dynamicProbes.Range(func(_, value any) bool {
+				observer.Observe(1, instrument.WithAttributes(value.([]attribute.KeyValue)...))
+				return true
+			})
+			return nil
+		}))
+	if err != nil {
+		return nil, err
+	}
 	instrumentedProcesses, err := meter.Int64UpDownCounter(
 		internalNames.InstrumentedProcesses.OTEL,
 		instrument.WithDescription("Total number of instrumented processes by process name"),
@@ -212,6 +228,7 @@ func NewInternalMetricsReporter(ctx context.Context, ctxInfo *global.ContextInfo
 		return nil, err
 	}
 	return &InternalMetricsReporter{
+		dynamicProbes:                    dynamicProbes,
 		ctx:                              ctx,
 		tracerFlushes:                    tracerFlushes,
 		otelMetricExports:                otelMetricExports,
@@ -397,4 +414,14 @@ func (p *InternalMetricsReporter) BPFPacketStats(count, ignored uint64) {
 
 func (p *InternalMetricsReporter) QueueBufferUtilization(subscriber string, ratio float64) {
 	p.queueCapacityRatio.Record(p.ctx, ratio, sanitizedAttributes(attribute.String(string(attr.Subscriber), subscriber)))
+}
+
+func (p *InternalMetricsReporter) DynamicProbe(serviceName, serviceNamespace, pid, function string, value float64) {
+	key := [4]string{serviceName, serviceNamespace, pid, function}
+	if value == 0 {
+		p.dynamicProbes.Delete(key)
+		return
+	}
+	processID, _ := strconv.ParseInt(pid, 10, 64)
+	p.dynamicProbes.Store(key, []attribute.KeyValue{attribute.String("service.name", serviceName), attribute.String("service.namespace", serviceNamespace), attribute.Int64("process.pid", processID), attribute.String("code.function.name", function)})
 }

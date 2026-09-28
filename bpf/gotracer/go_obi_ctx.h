@@ -9,6 +9,7 @@
 #include <bpfcore/utils.h>
 
 #include <common/go_addr_key.h>
+#include <common/go_stack.h>
 #include <common/map_sizing.h>
 #include <common/pin_internal.h>
 #include <common/scratch_mem.h>
@@ -37,8 +38,6 @@ enum { k_obi_ctx_kind_count = k_obi_ctx_kafka_produce + 1 };
 enum { k_obi_ctx_overflow_max = 255 };
 
 enum { k_obi_ctx_max_depth = 4 };
-
-enum { k_g_stack_hi_off = 8 }; // runtime.g.stack.hi
 
 typedef struct obi_ctx_frame {
     tp_info_t tp;
@@ -70,16 +69,6 @@ struct {
 } obi_ctx_stacks SEC(".maps");
 
 SCRATCH_MEM_TYPED(obi_ctx_stack_scratch, obi_ctx_stack_t)
-
-// How deep the probed call is in the goroutine stack. When Go grows the stack it
-// restarts the function, so the entry probe fires twice at the same depth. A nested
-// call of the same kind is always deeper
-static __always_inline u32 go_obi_ctx__stack_off(struct pt_regs *ctx) {
-    u64 stack_hi = 0;
-    bpf_probe_read_user(
-        &stack_hi, sizeof(stack_hi), (void *)((char *)GOROUTINE_PTR(ctx) + k_g_stack_hi_off));
-    return (u32)(stack_hi - PT_REGS_SP(ctx));
-}
 
 // The bounds are clamped in asm so that older verifiers see a single consistent
 // range for every frame index derived from the stored depth. The load is volatile
