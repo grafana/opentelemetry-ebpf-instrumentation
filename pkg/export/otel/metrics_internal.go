@@ -33,6 +33,7 @@ const internalMetricsMeterName = "obi_internal"
 
 // InternalMetricsReporter is an internal metrics Reporter that exports to OTEL
 type InternalMetricsReporter struct {
+	*dynamicInvocationProducer
 	dynamicProbes                    *sync.Map
 	ctx                              context.Context
 	tracerFlushes                    instrument.Float64Histogram
@@ -82,7 +83,8 @@ func NewInternalMetricsReporter(ctx context.Context, ctxInfo *global.ContextInfo
 		internalNames.BpfProbeLatency,
 		exporter.Temporality(metric.InstrumentKindHistogram),
 	)
-	provider := newInternalMeterProvider(res, &exporter, metrics.Interval, bpfProbeLatency)
+	dynamicInvocations := &dynamicInvocationProducer{name: internalNames.DynamicFunctionInvocations, temporality: exporter.Temporality(metric.InstrumentKindObservableCounter)}
+	provider := newInternalMeterProvider(res, &exporter, metrics.Interval, bpfProbeLatency, dynamicInvocations)
 	meter := provider.Meter(internalMetricsMeterName)
 	tracerFlushes, err := meter.Float64Histogram(
 		internalNames.TracerFlushes.OTEL,
@@ -228,6 +230,7 @@ func NewInternalMetricsReporter(ctx context.Context, ctxInfo *global.ContextInfo
 		return nil, err
 	}
 	return &InternalMetricsReporter{
+		dynamicInvocationProducer:        dynamicInvocations,
 		dynamicProbes:                    dynamicProbes,
 		ctx:                              ctx,
 		tracerFlushes:                    tracerFlushes,
@@ -256,13 +259,15 @@ func newInternalMeterProvider(
 	res *resource.Resource,
 	exporter *metric.Exporter,
 	interval time.Duration,
-	bpfProbeLatency *bpfProbeLatencyProducer,
+	producers ...metric.Producer,
 ) *metric.MeterProvider {
+	options := []metric.PeriodicReaderOption{metric.WithInterval(interval)}
+	for _, producer := range producers {
+		options = append(options, metric.WithProducer(producer))
+	}
 	return metric.NewMeterProvider(
 		metric.WithResource(res),
-		metric.WithReader(metric.NewPeriodicReader(*exporter,
-			metric.WithInterval(interval),
-			metric.WithProducer(bpfProbeLatency))),
+		metric.WithReader(metric.NewPeriodicReader(*exporter, options...)),
 	)
 }
 

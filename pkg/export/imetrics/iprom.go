@@ -30,6 +30,7 @@ type PrometheusEndpointConfig struct {
 
 // PrometheusReporter is an internal metrics Reporter that exports to Prometheus
 type PrometheusReporter struct {
+	DynamicProbeCounters
 	dynamicProbes                    *prometheus.GaugeVec
 	connector                        *connector.PrometheusManager
 	tracerFlushes                    prometheus.Histogram
@@ -178,6 +179,7 @@ func NewPrometheusReporter(cfg *InternalMetricsConfig, manager *connector.Promet
 		pr.prometheusRequests,
 		pr.instrumentedProcesses,
 		pr.dynamicProbes,
+		newDynamicInvocationCollector(&pr.DynamicProbeCounters, internalNames.DynamicFunctionInvocations.Prom),
 		pr.instrumentationErrors,
 		pr.buildInfo,
 		pr.bpfProbeExecutions,

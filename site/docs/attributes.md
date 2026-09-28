@@ -69,6 +69,7 @@ Attributes carried by OBI's own internal (obi.*) OTLP metrics. Keys are namespac
 | `bpf.probe.id` | string | development | Identifier of the eBPF program (probe) the stats belong to. | 42 |
 | `bpf.probe.name` | string | development | Name of the eBPF probe. | kprobe_tcp_sendmsg |
 | `bpf.probe.type` | string | development | eBPF program type of the probe. | kprobe; tracepoint |
+| `obi.dynamic.probe.id` | string | development | Identifier of a dynamic probe attachment within this OBI instance. Reattaching a probe assigns a new identifier and starts a new counter. | 42 |
 | `obi.goarch` | string | development | Go build target architecture (runtime.GOARCH). | amd64; arm64 |
 | `obi.goos` | string | development | Go build target OS (runtime.GOOS). | linux |
 | `obi.goversion` | string | development | Go toolchain version OBI was built with (runtime.Version()). | go1.25.11 |

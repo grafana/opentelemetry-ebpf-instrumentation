@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"sync"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 
 	"go.opentelemetry.io/obi/pkg/appolly/app"
@@ -25,24 +27,41 @@ type liveSpanProgram interface {
 	LiveSpanDescriptors(*config.CustomSpanSpec, uint64) []*ebpfcommon.USDTProbeDesc
 	RegisterLiveSpan(*config.CustomSpanSpec, uint64, string, uint64)
 	RemoveFailedLiveSpan(uint64)
+	LiveSpanInvocationMap() *ebpf.Map
 }
 
 type liveSpanLinks struct {
-	links   []io.Closer
-	cleanup func()
+	once        sync.Once
+	closeErr    error
+	links       []io.Closer
+	cleanup     func()
+	invocations *ebpf.Map
+	cookie      uint64
+}
+
+func (l *liveSpanLinks) Invocations() (uint64, error) {
+	var count uint64
+	err := l.invocations.Lookup(l.cookie, &count)
+	return count, err
 }
 
 func (l *liveSpanLinks) Close() error {
-	var err error
-	for _, v := range slices.Backward(l.links) {
-		err = errors.Join(err, v.Close())
-	}
-	if l.cleanup != nil {
-		l.cleanup()
-		l.cleanup = nil
-	}
-	l.links = nil
-	return err
+	l.once.Do(func() {
+		for _, v := range slices.Backward(l.links) {
+			l.closeErr = errors.Join(l.closeErr, v.Close())
+		}
+		if l.cleanup != nil {
+			l.cleanup()
+			l.cleanup = nil
+		}
+		l.links = nil
+		if l.invocations != nil {
+			if err := l.invocations.Delete(l.cookie); !errors.Is(err, ebpf.ErrKeyNotExist) {
+				l.closeErr = errors.Join(l.closeErr, err)
+			}
+		}
+	})
+	return l.closeErr
 }
 
 // AttachLiveSpan reuses the loaded custom_span BPF program, spec map, ring
@@ -98,6 +117,17 @@ func (pt *ProcessTracer) AttachLiveSpan(pid app.PID, ns uint32, span *config.Cus
 		return nil, fmt.Errorf("open target for uprobe: %w", err)
 	}
 
+	invocations := runtime.LiveSpanInvocationMap()
+	if err := invocations.Update(cookie, uint64(0), ebpf.UpdateNoExist); err != nil {
+		return nil, fmt.Errorf("initialize dynamic probe counter: %w", err)
+	}
+	attached := false
+	defer func() {
+		if !attached {
+			_ = invocations.Delete(cookie)
+		}
+	}()
+
 	probes := runtime.LiveSpanDescriptors(span, cookie)
 	for _, probe := range probes {
 		probe.Dynamic = true
@@ -113,7 +143,8 @@ func (pt *ProcessTracer) AttachLiveSpan(pid app.PID, ns uint32, span *config.Cus
 			}
 			return nil, err
 		}
-		return &liveSpanLinks{links: closers, cleanup: func() { runtime.RemoveFailedLiveSpan(cookie) }}, nil
+		attached = true
+		return &liveSpanLinks{links: closers, invocations: invocations, cookie: cookie, cleanup: func() { runtime.RemoveFailedLiveSpan(cookie) }}, nil
 	}
 	probe := probes[0]
 	if _, offset := parsePreResolvedOffset(span.FunctionSymbol()); !offset {
@@ -138,7 +169,8 @@ func (pt *ProcessTracer) AttachLiveSpan(pid app.PID, ns uint32, span *config.Cus
 		runtime.RemoveFailedLiveSpan(cookie)
 		return nil, errors.New("resolved live probe produced no uprobe link")
 	}
-	return &liveSpanLinks{links: closers, cleanup: func() { runtime.RemoveFailedLiveSpan(cookie) }}, nil
+	attached = true
+	return &liveSpanLinks{links: closers, invocations: invocations, cookie: cookie, cleanup: func() { runtime.RemoveFailedLiveSpan(cookie) }}, nil
 }
 
 func validateLiveOffset(elfFile *elf.File, target string) error {

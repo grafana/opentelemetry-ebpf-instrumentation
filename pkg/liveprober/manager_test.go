@@ -12,7 +12,17 @@ import (
 	"go.opentelemetry.io/obi/pkg/config"
 )
 
-type fakeLink struct{ closed bool }
+type fakeLink struct {
+	closed bool
+	count  uint64
+}
+
+func (l *fakeLink) Invocations() (uint64, error) {
+	if l.closed {
+		return 0, errors.New("closed")
+	}
+	return l.count, nil
+}
 
 func (l *fakeLink) Close() error { l.closed = true; return nil }
 
@@ -34,7 +44,7 @@ func testManager(t *testing.T, tracer *fakeTracer) *Manager {
 	t.Helper()
 	m := New()
 	m.identity = func(int) (processIdentity, error) { return processIdentity{startTime: 42}, nil }
-	if err := m.RegisterTarget(123, 1, tracer); err != nil {
+	if err := m.RegisterTarget(123, 1, tracer, nil); err != nil {
 		t.Fatal(err)
 	}
 	return m

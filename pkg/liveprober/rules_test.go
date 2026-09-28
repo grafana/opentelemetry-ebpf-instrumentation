@@ -53,7 +53,7 @@ func dynamicManager(t *testing.T) (*Manager, *resolvingTracer) {
 	m.ObserveProcess(123, func(criteria services.GlobDefinitionCriteria) bool {
 		return len(criteria) > 0 && len(criteria[0].PIDs) > 0 && criteria[0].PIDs[0] == 123
 	})
-	require.NoError(t, m.RegisterTarget(123, 1, tracer))
+	require.NoError(t, m.RegisterTarget(123, 1, tracer, nil))
 	t.Cleanup(func() { require.NoError(t, m.Close()) })
 	return m, tracer
 }
@@ -95,7 +95,7 @@ func TestRulesReportFailureAndPIDReuse(t *testing.T) {
 	results, err = m.ApplyRule("new", ruleFor(t, "main.two"))
 	require.NoError(t, err)
 	require.Equal(t, "error", results[0].Status)
-	require.NoError(t, m.RegisterTarget(123, 1, tracer))
+	require.NoError(t, m.RegisterTarget(123, 1, tracer, nil))
 	require.True(t, tracer.links[0].closed)
 	m.UnregisterTarget(123)
 	require.Empty(t, m.ListFunctions(nil))

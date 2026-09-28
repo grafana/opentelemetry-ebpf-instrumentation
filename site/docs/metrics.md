@@ -777,6 +777,42 @@ Latency distribution of the eBPF probe in seconds.
 | `bpf.probe.name` | string | `required` | development | Name of the eBPF probe. | kprobe_tcp_sendmsg |
 | `bpf.probe.type` | string | `required` | development | eBPF program type of the probe. | kprobe; tracepoint |
 
+## `obi.dynamic.function.invocations`
+
+Function entry probe hits since dynamic probe attachment, including calls whose spans are filtered or dropped. Starts at zero; removing the probe removes its live series and metadata. Return probes do not increment it. Go stack-growth retries can hit the entry probe more than once per call.
+
+| Instrument | Unit | Stability |
+| --- | --- | --- |
+| counter | {invocation} | development |
+
+| Attribute | Type | Requirement level | Stability | Description | Examples |
+| --- | --- | --- | --- | --- | --- |
+| `code.function.name` | string | `required` | stable | The method or function fully-qualified name without arguments. The value should fit the natural representation of the language runtime, which is also likely the same used within `code.stacktrace` attribute value. This attribute MUST NOT be used on the Profile signal since the data is already captured in 'message Function'. This constraint is imposed to prevent redundancy and maintain data integrity. | com.example.MyHttpService.serveRequest; GuzzleHttp\Client::transfer; fopen |
+| `container.id` | string | `recommended` | release_candidate | Container ID. Usually a UUID, as for example used to [identify Docker containers](https://docs.docker.com/engine/containers/run/#container-identification). The UUID might be abbreviated. | a3bf90e006b2 |
+| `container.name` | string | `recommended` | development | Container name used by container runtime. | opentelemetry-autoconf |
+| `host.name` | string | `recommended` | development | Name of the host. On Unix systems, it may contain what the hostname command returns, or the fully qualified hostname, or another name specified by the user. | opentelemetry-test |
+| `k8s.cluster.name` | string | `recommended` | release_candidate | The name of the cluster. | opentelemetry-cluster |
+| `k8s.container.name` | string | `recommended` | release_candidate | The name of the Container from Pod specification, must be unique within a Pod. Container runtime usually uses different globally unique name (`container.name`). | redis |
+| `k8s.cronjob.name` | string | `recommended` | release_candidate | The name of the CronJob. | opentelemetry |
+| `k8s.daemonset.name` | string | `recommended` | release_candidate | The name of the DaemonSet. | opentelemetry |
+| `k8s.deployment.name` | string | `recommended` | release_candidate | The name of the Deployment. | opentelemetry |
+| `k8s.job.name` | string | `recommended` | release_candidate | The name of the Job. | opentelemetry |
+| `k8s.kind` | string | `recommended` | development | Kind of the top-level Kubernetes owner of the decorated Pod (falls back to the direct owner's kind when no top-level owner is resolved). Deliberately never `Pod`, to bound label cardinality. | Deployment; StatefulSet |
+| `k8s.namespace.name` | string | `recommended` | release_candidate | The name of the namespace that the pod is running in. | default |
+| `k8s.node.name` | string | `recommended` | release_candidate | The name of the Node. | node-1 |
+| `k8s.owner.name` | string | `recommended` | development | Name of the top-level Kubernetes owner (Deployment, StatefulSet, DaemonSet, CronJob, …) of the Pod OBI decorated the signal with. | frontend |
+| `k8s.pod.name` | string | `recommended` | release_candidate | The name of the Pod. | opentelemetry-pod-autoconf |
+| `k8s.pod.start_time` | string | `recommended` | release_candidate | The start timestamp of the Pod. | 2025-12-04T08:41:03Z |
+| `k8s.pod.uid` | string | `recommended` | release_candidate | The UID of the Pod. | 275ecb36-5aa8-4c2a-9c47-d8bb681b9aff |
+| `k8s.replicaset.name` | string | `recommended` | release_candidate | The name of the ReplicaSet. | opentelemetry |
+| `k8s.statefulset.name` | string | `recommended` | release_candidate | The name of the StatefulSet. | opentelemetry |
+| `obi.dynamic.probe.id` | string | `required` | development | Identifier of a dynamic probe attachment within this OBI instance. Reattaching a probe assigns a new identifier and starts a new counter. | 42 |
+| `process.pid` | int | `required` | development | Process identifier (PID). | 1234 |
+| `service.instance.id` | string | `required` | stable | The string ID of the service instance. | 627cc493-f310-47de-96bd-71410b7dec09 |
+| `service.name` | string | `required` | stable | Logical name of the service. | shoppingcart |
+| `service.namespace` | string | `recommended` | stable | A namespace for `service.name`. | Shop |
+| `telemetry.sdk.language` | enum | `required` | stable | The language of the telemetry SDK. | cpp; dotnet; erlang; go; java; nodejs; php; python; … |
+
 ## `obi.dynamic.probes`
 
 Attached dynamic function probes by OpenTelemetry service and process.

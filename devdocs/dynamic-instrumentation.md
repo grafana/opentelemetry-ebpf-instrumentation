@@ -172,6 +172,50 @@ Internal metrics expose `obi.dynamic.probes` (Prometheus: `obi_dynamic_probes`),
 with `service.name`, `service.namespace`, `process.pid`, and `code.function.name`.
 Each active PID/function contributes one; detached probes disappear.
 
+`obi.dynamic.function.invocations` (Prometheus:
+`obi_dynamic_function_invocations_total`) counts entry probe hits for each live
+attachment. It starts at zero, counts calls before they return, and excludes
+return-probe hits. Counting happens in BPF before event-buffer submission and
+span filtering, so sampling, duplicate-span suppression, dropped events, and
+unfinished calls do not hide probe activity. For paired USDT probes it counts
+the start probe, before argument matching. These are raw probe hits: Go stack
+growth can retry a function entry, so the count can exceed logical calls.
+
+The counter carries `process.pid` (the PID visible to OBI), `code.function.name`,
+`service.name`, `service.namespace`, `service.instance.id`,
+`telemetry.sdk.language`, `host.name`, and available container and Kubernetes
+metadata, including pod name/UID, namespace, node, cluster, and workload owners.
+It uses the same Kubernetes fields as `target_info`. Metadata is read at
+collection time, so late Kubernetes decoration and SDK service names appear
+without another function call. Prometheus replaces dots in label names with
+underscores. `obi.dynamic.probe.id` identifies the attachment within the OBI
+instance; each glob match has its own counter and reattachment gets a new ID.
+Address-based probes use their hexadecimal offset as `code.function.name`.
+
+API deletion, config reconciliation, TTL expiry, process exit, and shutdown
+remove the BPF counter and the exporter-held metadata. The series disappears
+from subsequent collections; data already stored in a backend remains there.
+
+Enable the Prometheus internal exporter, for example:
+
+```yaml
+internal_metrics:
+  exporter: prometheus
+  prometheus:
+    port: 6060
+    path: /metrics
+```
+
+For OTLP use `internal_metrics.exporter: otel` and configure
+`otel_metrics_export.endpoint`. OTLP honors the exporter's cumulative or delta
+temporality. To inspect hit rates in Prometheus:
+
+```promql
+sum by (process_pid, code_function_name, service_name, k8s_pod_name) (
+  rate(obi_dynamic_function_invocations_total[1m])
+)
+```
+
 ## Go spans and values
 
 Go entry and return-site uprobes pair by goroutine, so scheduling onto another

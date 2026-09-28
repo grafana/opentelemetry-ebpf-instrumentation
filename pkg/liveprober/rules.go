@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/gobwas/glob"
@@ -18,6 +19,7 @@ import (
 	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
 	"go.opentelemetry.io/obi/pkg/appolly/services"
 	"go.opentelemetry.io/obi/pkg/config"
+	"go.opentelemetry.io/obi/pkg/export/imetrics"
 )
 
 type SymbolResolver interface {
@@ -41,6 +43,7 @@ type dynamicKey struct {
 	function string
 }
 type dynamicAttachment struct {
+	cookie uint64
 	result ProbeResult
 	span   config.CustomSpanSpec
 	link   io.Closer
@@ -52,13 +55,15 @@ type ruleState struct {
 	results    []ProbeResult
 }
 
-func (m *Manager) Configure(cfg config.DynamicInstrumentationConfig, symbols SymbolResolver, metric func(ProbeResult, float64)) {
+func (m *Manager) Configure(cfg config.DynamicInstrumentationConfig, symbols SymbolResolver, metrics imetrics.Reporter) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.symbols = symbols
 	m.maxProbes = cfg.MaxProbes
 	m.requestTimeout = cfg.RequestTimeout
-	m.metric = metric
+	if metrics != nil {
+		m.metrics = metrics
+	}
 }
 
 func (m *Manager) Changed() <-chan struct{} { return m.changed }
@@ -114,13 +119,12 @@ func (m *Manager) SetService(pid int, service svc.Attrs) {
 		}
 		updated := m.resultLocked(pid, key.function, attachment.result.SpanName)
 		updated.Status = attachment.result.Status
+		m.reportInvocationsLocked(attachment.cookie, pid, key.function, attachment.link)
 		if updated == attachment.result {
 			continue
 		}
-		if m.metric != nil {
-			m.metric(attachment.result, 0)
-			m.metric(updated, 1)
-		}
+		m.reportProbe(attachment.result, 0)
+		m.reportProbe(updated, 1)
 		attachment.result = updated
 	}
 	if err := m.reconcileLocked(); err != nil {
@@ -329,10 +333,9 @@ func (m *Manager) reconcileLocked() error {
 								}
 								if err == nil {
 									result.Status = "attached"
-									m.dynamic[key] = &dynamicAttachment{result: result, span: concrete, link: probe}
-									if m.metric != nil {
-										m.metric(result, 1)
-									}
+									m.dynamic[key] = &dynamicAttachment{result: result, span: concrete, link: probe, cookie: m.nextCookie}
+									m.reportProbe(result, 1)
+									m.reportInvocationsLocked(m.nextCookie, pid, name, probe)
 								}
 							}
 							if err != nil {
@@ -375,12 +378,11 @@ func (m *Manager) resultLocked(pid int, function, name string) ProbeResult {
 
 func (m *Manager) removeDynamicLocked(key dynamicKey) error {
 	a := m.dynamic[key]
+	m.metrics.DynamicProbeInvocations(a.cookie, nil)
 	if err := a.link.Close(); err != nil {
 		return err
 	}
-	if m.metric != nil {
-		m.metric(a.result, 0)
-	}
+	m.reportProbe(a.result, 0)
 	delete(m.dynamic, key)
 	return nil
 }
@@ -436,4 +438,21 @@ func RuleJSON(data []byte) (config.DynamicInstrumentationRule, error) {
 	var rule config.DynamicInstrumentationRule
 	err := decodeRuleJSON(data, &rule)
 	return rule, err
+}
+
+func (m *Manager) reportProbe(result ProbeResult, value float64) {
+	m.metrics.DynamicProbe(result.ServiceName, result.ServiceNamespace, strconv.Itoa(result.PID), result.Function, value)
+}
+
+func (m *Manager) reportInvocationsLocked(cookie uint64, pid int, function string, link io.Closer) {
+	counter, ok := link.(interface{ Invocations() (uint64, error) })
+	if !ok {
+		return
+	}
+	service := m.targets[pid].service
+	if service == nil {
+		snapshot := svc.Attrs{UID: m.services[pid]}
+		service = func() svc.Attrs { return snapshot }
+	}
+	m.metrics.DynamicProbeInvocations(cookie, &imetrics.DynamicProbeCounter{PID: pid, Function: function, Read: counter.Invocations, Service: service})
 }

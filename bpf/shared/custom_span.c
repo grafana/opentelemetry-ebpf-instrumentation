@@ -13,6 +13,7 @@
 #include <common/event_defs.h>
 #include <common/go_stack.h>
 #include <common/preempt_guard.h>
+#include <common/pin_internal.h>
 #include <common/ringbuf.h>
 #include <common/usdt.h>
 #include <logger/bpf_dbg.h>
@@ -21,6 +22,14 @@
 #include <maps/go_trace_map.h>
 
 struct custom_span_event _custom_span_event = {};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, k_obi_usdt_max_spec_cnt);
+    __type(key, u64);
+    __type(value, u64);
+    __uint(pinning, OBI_PIN_INTERNAL);
+} obi_dynamic_invocations SEC(".maps");
 
 // has_attach_cookie is patched to 1 by userspace at load time when the
 // running kernel exports bpf_get_attach_cookie (≥5.15). On older kernels it
@@ -304,6 +313,14 @@ custom_span_emit(struct pt_regs *ctx, u8 kind, custom_span_context_fn context) {
     struct obi_usdt_spec *spec = custom_span_spec_lookup(ctx);
     if (!spec) {
         return 0;
+    }
+
+    // Userspace owns entries so a late hit cannot recreate a detached counter.
+    if (kind != k_custom_span_kind_end) {
+        u64 *count = bpf_map_lookup_elem(&obi_dynamic_invocations, &spec->cookie);
+        if (count) {
+            __sync_fetch_and_add(count, 1);
+        }
     }
 
     struct custom_span_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);

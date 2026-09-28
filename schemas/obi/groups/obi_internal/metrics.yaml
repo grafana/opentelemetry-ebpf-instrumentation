@@ -449,3 +449,66 @@ groups:
         requirement_level: required
       - ref: code.function.name
         requirement_level: required
+
+  - id: metric.obi.obi.dynamic.function.invocations
+    type: metric
+    metric_name: obi.dynamic.function.invocations
+    instrument: counter
+    unit: "{invocation}"
+    stability: development
+    brief: >
+      Function entry probe hits since dynamic probe attachment, including calls
+      whose spans are filtered or dropped. Starts at zero; removing the probe
+      removes its live series and metadata. Return probes do not increment it.
+      Go stack-growth retries can hit the entry probe more than once per call.
+    attributes:
+      - ref: obi.dynamic.probe.id
+        requirement_level: required
+      - ref: process.pid
+        requirement_level: required
+      - ref: code.function.name
+        requirement_level: required
+      - ref: service.name
+        requirement_level: required
+      - ref: service.instance.id
+        requirement_level: required
+      - ref: telemetry.sdk.language
+        requirement_level: required
+      - ref: service.namespace
+        requirement_level: recommended
+      - ref: host.name
+        requirement_level: recommended
+      - ref: container.id
+        requirement_level: recommended
+      - ref: container.name
+        requirement_level: recommended
+      - ref: k8s.namespace.name
+        requirement_level: recommended
+      - ref: k8s.pod.name
+        requirement_level: recommended
+      - ref: k8s.container.name
+        requirement_level: recommended
+      - ref: k8s.node.name
+        requirement_level: recommended
+      - ref: k8s.pod.uid
+        requirement_level: recommended
+      - ref: k8s.pod.start_time
+        requirement_level: recommended
+      - ref: k8s.deployment.name
+        requirement_level: recommended
+      - ref: k8s.replicaset.name
+        requirement_level: recommended
+      - ref: k8s.statefulset.name
+        requirement_level: recommended
+      - ref: k8s.job.name
+        requirement_level: recommended
+      - ref: k8s.cronjob.name
+        requirement_level: recommended
+      - ref: k8s.daemonset.name
+        requirement_level: recommended
+      - ref: k8s.cluster.name
+        requirement_level: recommended
+      - ref: k8s.kind
+        requirement_level: recommended
+      - ref: k8s.owner.name
+        requirement_level: recommended

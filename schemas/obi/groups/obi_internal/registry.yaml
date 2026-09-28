@@ -79,6 +79,13 @@ groups:
       (`process.executable.name`, `error.type`) the metrics reference it
       directly rather than declaring an OBI-specific alias.
     attributes:
+      - id: obi.dynamic.probe.id
+        type: string
+        stability: development
+        brief: >
+          Identifier of a dynamic probe attachment within this OBI instance.
+          Reattaching a probe assigns a new identifier and starts a new counter.
+        examples: ["42"]
       - id: obi.goarch
         type: string
         stability: development

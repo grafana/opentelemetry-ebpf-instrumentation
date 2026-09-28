@@ -6,6 +6,8 @@
 package generictracer // import "go.opentelemetry.io/obi/pkg/internal/ebpf/generictracer"
 
 import (
+	"github.com/cilium/ebpf"
+
 	"go.opentelemetry.io/obi/pkg/config"
 	ebpfcommon "go.opentelemetry.io/obi/pkg/ebpf/common"
 	"go.opentelemetry.io/obi/pkg/internal/ebpf/customspan"
@@ -27,4 +29,8 @@ func (p *Tracer) RegisterLiveSpan(span *config.CustomSpanSpec, cookie uint64, id
 
 func (p *Tracer) RemoveFailedLiveSpan(cookie uint64) {
 	p.customSpan.Remove(cookie)
+}
+
+func (p *Tracer) LiveSpanInvocationMap() *ebpf.Map {
+	return p.bpfObjects.ObiDynamicInvocations
 }

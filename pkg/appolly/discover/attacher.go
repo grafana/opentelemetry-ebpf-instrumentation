@@ -199,7 +199,7 @@ func (ta *traceAttacher) attacherLoop(_ context.Context) (swarm.RunFunc, error) 
 							ta.DynamicInstrumentation.SetService(int(fi.Pid()), fi.ServiceAttrs())
 							tracer := ta.existingTracers[executableKey(fi)].tracer
 							if tracer != nil {
-								if err := ta.DynamicInstrumentation.RegisterTarget(int(fi.Pid()), fi.Ns(), tracer); err != nil {
+								if err := ta.DynamicInstrumentation.RegisterTarget(int(fi.Pid()), fi.Ns(), tracer, fi.ServiceAttrs); err != nil {
 									ta.log.Warn("registering dynamic probe target", "pid", fi.Pid(), "error", err)
 								}
 							}

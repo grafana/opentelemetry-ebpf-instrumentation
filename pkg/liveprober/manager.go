@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/obi/pkg/appolly/app"
 	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
 	"go.opentelemetry.io/obi/pkg/config"
+	"go.opentelemetry.io/obi/pkg/export/imetrics"
 )
 
 var (
@@ -81,15 +82,17 @@ type ProbeState struct {
 }
 
 type target struct {
+	service  func() svc.Attrs
 	tracer   TargetTracer
 	ns       uint32
 	identity processIdentity
 }
 
 type attachment struct {
-	state ProbeState
-	link  io.Closer
-	timer *time.Timer
+	cookie uint64
+	state  ProbeState
+	link   io.Closer
+	timer  *time.Timer
 }
 
 type Manager struct {
@@ -103,7 +106,7 @@ type Manager struct {
 	updated        chan struct{}
 	requestTimeout time.Duration
 	maxProbes      int
-	metric         func(ProbeResult, float64)
+	metrics        imetrics.Reporter
 	closed         bool
 
 	mu             sync.Mutex
@@ -116,7 +119,8 @@ type Manager struct {
 
 func New() *Manager {
 	return &Manager{
-		rules: map[string]ruleState{}, matches: map[int]ProcessMatcher{}, services: map[int]svc.UID{},
+		metrics: imetrics.NoopReporter{},
+		rules:   map[string]ruleState{}, matches: map[int]ProcessMatcher{}, services: map[int]svc.UID{},
 		dynamic: map[dynamicKey]*dynamicAttachment{}, suppressed: map[dynamicKey]bool{},
 		changed: make(chan struct{}, 1), updated: make(chan struct{}), maxProbes: 1024, requestTimeout: 10 * time.Second,
 
@@ -127,7 +131,7 @@ func New() *Manager {
 	}
 }
 
-func (m *Manager) RegisterTarget(pid int, ns uint32, tracer TargetTracer) error {
+func (m *Manager) RegisterTarget(pid int, ns uint32, tracer TargetTracer, service func() svc.Attrs) error {
 	start, err := m.identity(pid)
 	if err != nil {
 		return err
@@ -140,7 +144,7 @@ func (m *Manager) RegisterTarget(pid int, ns uint32, tracer TargetTracer) error 
 	if prior, ok := m.targets[pid]; ok && prior.identity != start {
 		m.detachTargetLocked(pid, "target_gone")
 	}
-	m.targets[pid] = target{tracer: tracer, ns: ns, identity: start}
+	m.targets[pid] = target{tracer: tracer, ns: ns, identity: start, service: service}
 	err = m.reconcileLocked()
 	m.notifyLocked()
 	return err
@@ -177,6 +181,7 @@ func (m *Manager) detachTargetLocked(pid int, status string) {
 		if err := a.link.Close(); err != nil {
 			a.state.LastError = err.Error()
 		}
+		m.metrics.DynamicProbeInvocations(a.cookie, nil)
 		a.state.Status = status
 	}
 }
@@ -220,7 +225,7 @@ func (m *Manager) Apply(id string, spec ProbeSpec) (ProbeState, error) {
 	}
 
 	state := ProbeState{ProbeSpec: spec, Status: "attached", LinkID: fmt.Sprintf("attach-%d", cookie)}
-	newAttachment := &attachment{state: state, link: link}
+	newAttachment := &attachment{state: state, link: link, cookie: cookie}
 	if spec.TTLSeconds != 0 {
 		newAttachment.timer = time.AfterFunc(time.Duration(spec.TTLSeconds)*time.Second, func() {
 			m.expire(id, spec.Generation)
@@ -231,12 +236,14 @@ func (m *Manager) Apply(id string, spec ProbeSpec) (ProbeState, error) {
 			old.timer.Stop()
 		}
 		if old.state.Status == "attached" {
+			m.metrics.DynamicProbeInvocations(old.cookie, nil)
 			if err := old.link.Close(); err != nil {
 				newAttachment.state.LastError = "old link close: " + err.Error()
 			}
 		}
 	}
 	m.probes[id] = newAttachment
+	m.reportInvocationsLocked(cookie, spec.PID, span.TargetIdentifier(), link)
 	m.lastGeneration[id] = spec.Generation
 	return newAttachment.state, nil
 }
@@ -270,6 +277,7 @@ func (m *Manager) expire(id string, generation uint64) {
 	if err := a.link.Close(); err != nil {
 		a.state.LastError = err.Error()
 	}
+	m.metrics.DynamicProbeInvocations(a.cookie, nil)
 	a.state.Status = "expired"
 	a.timer = nil
 }
@@ -287,10 +295,12 @@ func (m *Manager) Delete(id string) error {
 	if a.state.Status == "attached" {
 		if err := a.link.Close(); err != nil {
 			a.state.LastError = err.Error()
+			m.metrics.DynamicProbeInvocations(a.cookie, nil)
 			a.state.Status = "error"
 			return err
 		}
 	}
+	m.metrics.DynamicProbeInvocations(a.cookie, nil)
 	delete(m.probes, id)
 	return nil
 }
@@ -320,6 +330,7 @@ func (m *Manager) Close() error {
 		if a.state.Status == "attached" {
 			err = errors.Join(err, a.link.Close())
 		}
+		m.metrics.DynamicProbeInvocations(a.cookie, nil)
 		delete(m.probes, id)
 	}
 	clear(m.rules)

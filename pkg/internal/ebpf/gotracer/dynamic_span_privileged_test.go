@@ -91,10 +91,19 @@ func TestDynamicSpansSDKParentAndDetach(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); tracer.Run(ctx, eventContext, spans) }()
 	t.Cleanup(func() { cancel(); <-done; spans.Close() })
+	count := func(probe io.Closer) uint64 {
+		t.Helper()
+		counter, ok := probe.(interface{ Invocations() (uint64, error) })
+		require.True(t, ok)
+		value, err := counter.Invocations()
+		require.NoError(t, err)
+		return value
+	}
 	var probes []io.Closer
 	for index, name := range []string{"outer", "inner", "outerAsync", "outerDetached", "echo", "echoAsync", "HTTPHandler", "sdkOuter", "sdkInner"} {
 		probe, err := tracer.AttachLiveSpan(pid, info.Ns(), &config.CustomSpanSpec{Name: name, On: config.CustomSpanTarget{FunctionSpan: "main." + name}}, uint64(index+1), name, 1)
 		require.NoError(t, err)
+		require.Zero(t, count(probe))
 		probes = append(probes, probe)
 		t.Cleanup(func() { _ = probe.Close() })
 	}
@@ -111,6 +120,7 @@ func TestDynamicSpansSDKParentAndDetach(t *testing.T) {
 		{command: "HTTP_DETACHED", outer: "outerDetached", http: true},
 	} {
 		t.Run(test.command, func(t *testing.T) {
+			before := count(probes[1])
 			_, err = io.WriteString(stdin, test.command+"\n")
 			require.NoError(t, err)
 			prefix, expected := "RESULT=", 2
@@ -135,6 +145,7 @@ func TestDynamicSpansSDKParentAndDetach(t *testing.T) {
 					t.Fatalf("expected %d spans, got %v", expected, found)
 				}
 			}
+			require.Equal(t, before+1, count(probes[1]), "one entry per call, without counting returns")
 			outer, inner := found[test.outer], found["inner"]
 			if test.http {
 				require.Equal(t, found["server"].SpanID, outer.ParentSpanID)
@@ -262,6 +273,12 @@ func TestDynamicSpansSDKParentAndDetach(t *testing.T) {
 	require.True(t, pids.ValidPID(otherPID, otherInfo.Ns(), ebpfcommon.PIDTypeKProbes))
 	require.False(t, pids.ValidPID(pid, info.Ns(), ebpfcommon.PIDTypeKProbes))
 	t.Run("GENERIC_HTTP", func(t *testing.T) {
+		probe, err := genericTracer.AttachLiveSpan(otherPID, otherInfo.Ns(), &config.CustomSpanSpec{
+			Name: "generic", On: config.CustomSpanTarget{FunctionNoRet: "go.opentelemetry.io/obi/pkg/internal/ebpf/gotracer.dynamicGenericHandler"},
+		}, 200, "generic", 1)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, probe.Close()) })
+		require.Zero(t, count(probe))
 		client := &http.Client{Timeout: 10 * time.Second}
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, otherURL+"/generic", nil)
 		require.NoError(t, err)
@@ -270,6 +287,7 @@ func TestDynamicSpansSDKParentAndDetach(t *testing.T) {
 		_, err = io.Copy(io.Discard, response.Body)
 		require.NoError(t, err)
 		require.NoError(t, response.Body.Close())
+		require.Positive(t, count(probe), "generic tracer dynamic probes must count entries too")
 		timeout := time.After(10 * time.Second)
 		for {
 			select {
@@ -361,13 +379,18 @@ func TestDynamicSpansSDKParentAndDetach(t *testing.T) {
 		require.NoError(t, err)
 		parent := strings.Fields(strings.TrimPrefix(waitForClientLine(t, lines, "BLOCKED_CONTEXT=", 10*time.Second), "BLOCKED_CONTEXT="))
 		waitForClientLine(t, lines, "BLOCKED", 10*time.Second)
+		// A new goroutine can retry the entry after runtime.morestack grows its stack.
+		require.Positive(t, count(probe), "count entry hits before the call returns or emits a span")
 		require.NoError(t, probe.Close())
+		_, err = probe.(interface{ Invocations() (uint64, error) }).Invocations()
+		require.Error(t, err, "detachment must delete the BPF counter")
 		replacement, err := tracer.AttachLiveSpan(pid, info.Ns(), spec, 101, "blocked", 2)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = replacement.Close() })
 		_, err = io.WriteString(stdin, "RELEASE\n")
 		require.NoError(t, err)
 		waitForClientLine(t, lines, "RELEASED", 10*time.Second)
+		require.Zero(t, count(replacement), "returning a detached invocation must not hit a replacement counter")
 		found := map[request.EventType]request.Span{}
 		timeout := time.After(10 * time.Second)
 		for len(found) < 2 {
@@ -409,10 +432,13 @@ func TestDynamicGenericProcessHelper(t *testing.T) {
 	if os.Getenv("OBI_DYNAMIC_GENERIC_HELPER") != "1" {
 		t.Skip("subprocess fixture")
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "generic tracer response")
-	}))
+	server := httptest.NewServer(http.HandlerFunc(dynamicGenericHandler))
 	defer server.Close()
 	fmt.Println("READY=" + server.URL)
 	bufio.NewScanner(os.Stdin).Scan()
+}
+
+//go:noinline
+func dynamicGenericHandler(w http.ResponseWriter, _ *http.Request) {
+	_, _ = io.WriteString(w, "generic tracer response")
 }
