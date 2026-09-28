@@ -8,7 +8,7 @@ from application discovery and log enrichment:
 ```yaml
 dynamic_instrumentation:
   enabled: true
-  listen_address: 127.0.0.1:8089
+  listen_address: 0.0.0.0:8089
   rules:
     - service:
         - exe_path: "*/checkout"
@@ -39,12 +39,10 @@ also permits name resolution in stripped executables.
 
 ## API
 
-The HTTP listener is optional. Loopback listeners can run without authentication.
-For direct access from an external controller, configure `listen_address` with the
-reachable address and set `auth_token_file` to a file containing a bearer token,
-for example a mounted Kubernetes Secret. Non-loopback listeners require this file;
-clients send `Authorization: Bearer <token>` on every request. Alternatively, use
-an authenticated local proxy or port forwarding with the loopback listener.
+The HTTP listener is optional and does not require authentication. Set
+`listen_address: 0.0.0.0:8089` to accept connections on all IPv4 interfaces, or
+`listen_address: "[::]:8089"` for IPv6. External controllers use OBI's reachable
+address in place of `127.0.0.1` in the examples below.
 In a DaemonSet, send requests to OBI on the node hosting the selected workload.
 OBI does not forward rules between nodes.
 
@@ -107,7 +105,7 @@ the named-function API above resolves addresses and return sites inside OBI.
 When OBI is started with a configuration file, it polls that path and reconciles
 changes to `dynamic_instrumentation.rules`. Replacing the file atomically or
 updating a ConfigMap symlink works. Invalid updates preserve the previous rules.
-API rules survive file reloads. Other configuration changes, including listener, authentication,
+API rules survive file reloads. Other configuration changes, including listener
 and cache settings, take effect at startup only. Configuration read from standard
 input has no file to watch.
 

@@ -163,7 +163,6 @@ DiscoveryConfig for the discover.ProcessFinder pipeline
 
 | YAML Path | Type | Env Var | Default | Values | Deprecated | Description |
 |---|---|---|---|---|---|---|
-| `dynamic_instrumentation.auth_token_file` | `string` | `OTEL_EBPF_DYNAMIC_INSTRUMENTATION_AUTH_TOKEN_FILE` |  |  |  |  |
 | `dynamic_instrumentation.enabled` | `boolean` | `OTEL_EBPF_DYNAMIC_INSTRUMENTATION_ENABLED` | `false` |  |  |  |
 | `dynamic_instrumentation.listen_address` | `string` | `OTEL_EBPF_DYNAMIC_INSTRUMENTATION_LISTEN_ADDRESS` |  |  |  |  |
 | `dynamic_instrumentation.max_cached_binary_bytes` | `integer` |  | `8388608` |  |  |  |

@@ -196,26 +196,20 @@ func TestMetadataChangeReconcilesExistingProcess(t *testing.T) {
 	require.True(t, tracer.links[0].closed)
 }
 
-func TestRemoteAPIAuthorization(t *testing.T) {
+func TestRemoteAPIWithoutAuthentication(t *testing.T) {
 	m, _ := dynamicManager(t)
-	handler := requireToken(m.Handler(), "controller-secret")
-	for _, authorization := range []string{"", "Bearer wrong", "Bearer controller-secret"} {
-		request := httptest.NewRequest(http.MethodGet, "/v1/dynamic-instrumentation/probes", nil)
-		request.Header.Set("Authorization", authorization)
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		if authorization == "Bearer controller-secret" {
-			require.Equal(t, http.StatusOK, response.Code)
-		} else {
-			require.Equal(t, http.StatusUnauthorized, response.Code)
-			require.NotContains(t, response.Body.String(), "controller-secret")
-		}
-	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/dynamic-instrumentation/probes", nil)
+	response := httptest.NewRecorder()
+	m.Handler().ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code)
+
 	cfg := config.DefaultDynamicInstrumentationConfig()
-	cfg.ListenAddress = "0.0.0.0:8089"
-	require.ErrorContains(t, cfg.Validate(), "auth_token_file")
-	cfg.AuthTokenFile = "/run/secrets/probe-token"
-	require.NoError(t, cfg.Validate())
+	for _, address := range []string{"0.0.0.0:8089", "[::]:8089", ":8089", "192.0.2.1:8089"} {
+		cfg.ListenAddress = address
+		require.NoError(t, cfg.Validate(), address)
+	}
+	cfg.ListenAddress = "0.0.0.0"
+	require.ErrorContains(t, cfg.Validate(), "listen_address")
 }
 
 func TestDeletedFunctionStaysRemovedUntilExplicitlyRequested(t *testing.T) {

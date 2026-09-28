@@ -721,10 +721,6 @@
     },
     "DynamicInstrumentationConfig": {
       "properties": {
-        "auth_token_file": {
-          "type": "string",
-          "x-env-var": "OTEL_EBPF_DYNAMIC_INSTRUMENTATION_AUTH_TOKEN_FILE"
-        },
         "enabled": {
           "type": "boolean",
           "default": false,

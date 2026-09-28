@@ -43,14 +43,17 @@ func TestDynamicAPIConfigReload(t *testing.T) {
 	lines := collectClientLines(t, "API target", output)
 	waitForClientLine(t, lines, "READY", 10*time.Second)
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp4", "0.0.0.0:0")
 	require.NoError(t, err)
-	address := listener.Addr().String()
+	listenAddress := listener.Addr().String()
+	_, port, err := net.SplitHostPort(listenAddress)
+	require.NoError(t, err)
+	address := net.JoinHostPort("127.0.0.1", port)
 	require.NoError(t, listener.Close())
 	configPath := filepath.Join(t.TempDir(), "obi.json")
 	writeConfig := func(rules string) {
 		t.Helper()
-		data := fmt.Sprintf(`{"trace_printer":"json","discovery":{"poll_interval":"100ms"},"dynamic_instrumentation":{"enabled":true,"listen_address":%q,"watch_interval":"100ms","rules":%s}}`, address, rules)
+		data := fmt.Sprintf(`{"trace_printer":"json","discovery":{"poll_interval":"100ms"},"dynamic_instrumentation":{"enabled":true,"listen_address":%q,"watch_interval":"100ms","rules":%s}}`, listenAddress, rules)
 		require.NoError(t, os.WriteFile(configPath+".new", []byte(data), 0o600))
 		require.NoError(t, os.Rename(configPath+".new", configPath))
 	}

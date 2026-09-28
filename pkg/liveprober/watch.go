@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"reflect"
-	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -29,23 +27,11 @@ func (m *Manager) Run(ctx context.Context, cfg config.DynamicInstrumentationConf
 	}
 	var server *http.Server
 	if cfg.ListenAddress != "" {
-		handler := m.Handler()
-		if cfg.AuthTokenFile != "" {
-			data, err := os.ReadFile(cfg.AuthTokenFile)
-			if err != nil {
-				return fmt.Errorf("dynamic instrumentation token file: %w", err)
-			}
-			token := strings.TrimSpace(string(data))
-			if token == "" {
-				return errors.New("dynamic instrumentation token file is empty")
-			}
-			handler = requireToken(handler, token)
-		}
 		listener, err := net.Listen("tcp", cfg.ListenAddress)
 		if err != nil {
 			return fmt.Errorf("dynamic instrumentation listener: %w", err)
 		}
-		server = &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: cfg.RequestTimeout + 5*time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: maxRequestBytes}
+		server = &http.Server{Handler: m.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: cfg.RequestTimeout + 5*time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: maxRequestBytes}
 		go func() {
 			if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				slog.Error("dynamic instrumentation API stopped", "error", err)
@@ -146,17 +132,4 @@ func dynamicRules(data []byte, defaults config.DynamicInstrumentationConfig) ([]
 		return defaults.Rules, nil
 	}
 	return nil, nil
-}
-
-func requireToken(next http.Handler, token string) http.Handler {
-	expected := sha256.Sum256([]byte("Bearer " + token))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		actual := sha256.Sum256([]byte(r.Header.Get("Authorization")))
-		if subtle.ConstantTimeCompare(actual[:], expected[:]) != 1 {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			writeError(w, http.StatusUnauthorized, errors.New("invalid authorization"))
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }

@@ -17,7 +17,6 @@ import (
 type DynamicInstrumentationConfig struct {
 	Enabled              bool                         `yaml:"enabled" env:"OTEL_EBPF_DYNAMIC_INSTRUMENTATION_ENABLED"`
 	ListenAddress        string                       `yaml:"listen_address" env:"OTEL_EBPF_DYNAMIC_INSTRUMENTATION_LISTEN_ADDRESS"`
-	AuthTokenFile        string                       `yaml:"auth_token_file" env:"OTEL_EBPF_DYNAMIC_INSTRUMENTATION_AUTH_TOKEN_FILE"`
 	TTL                  time.Duration                `yaml:"ttl"`
 	WatchInterval        time.Duration                `yaml:"watch_interval"`
 	RequestTimeout       time.Duration                `yaml:"request_timeout"`
@@ -48,12 +47,9 @@ func (c *DynamicInstrumentationConfig) Validate() error {
 		return errors.New("dynamic_instrumentation: cache limits must be nonnegative and max_probes must be between 1 and 1048576")
 	}
 	if c.ListenAddress != "" {
-		host, _, err := net.SplitHostPort(c.ListenAddress)
+		_, _, err := net.SplitHostPort(c.ListenAddress)
 		if err != nil {
 			return fmt.Errorf("dynamic_instrumentation.listen_address: %w", err)
-		}
-		if !net.ParseIP(host).IsLoopback() && c.AuthTokenFile == "" {
-			return errors.New("dynamic_instrumentation: non-loopback listeners require auth_token_file")
 		}
 	}
 	for i := range c.Rules {
