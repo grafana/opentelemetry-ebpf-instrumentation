@@ -17,6 +17,19 @@ type Field struct {
 
 const structFieldSize = 24 // sizeof(runtime.structField): {*name, *_type, uintptr}
 
+// PackagePath returns the import path stored with a struct's unexported fields.
+func (t *Type) PackagePath() string {
+	if t.Kind != Struct {
+		return ""
+	}
+	data, ok := t.w.rdataSlice(t.va+rtTypeSize, 8)
+	if !ok {
+		return ""
+	}
+	path, _ := t.w.readFieldName(binary.LittleEndian.Uint64(data))
+	return path
+}
+
 // Fields returns t's fields; nil if t is not a struct.
 func (t *Type) Fields() []Field {
 	if t.Kind != Struct {

@@ -25,6 +25,7 @@ struct go_dynamic_frame {
     tp_info_t current;
     tp_info_t previous;
     u64 parent;
+    u64 sdk_parent_id;
     u64 cookie;
     u32 stack_off;
     u32 spec_id;
@@ -166,6 +167,7 @@ static __always_inline void go_dynamic_span_inherit(const go_addr_key_t *gorouti
         const struct go_dynamic_frame_key key = {.goroutine = *parent, .id = *head};
         const struct go_dynamic_frame *source = bpf_map_lookup_elem(&go_dynamic_span_frames, &key);
         if (source) {
+            frame->sdk_parent_id = source->sdk_parent_id;
             frame->cookie = source->cookie;
             frame->spec_id = source->spec_id;
         }

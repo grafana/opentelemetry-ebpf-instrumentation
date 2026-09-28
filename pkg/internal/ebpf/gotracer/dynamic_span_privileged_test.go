@@ -8,6 +8,7 @@ package gotracer
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -71,6 +72,7 @@ func TestDynamicSpansSDKParentAndDetach(t *testing.T) {
 	tracer := ebpftracer.NewProcessTracer(ebpftracer.Go, []ebpftracer.Tracer{goTracer}, &cfg, imetrics.NoopReporter{})
 	require.NoError(t, tracer.Init(eventContext, &cfg))
 	info := goProcessFileInfo(t, pid)
+	_, dwarfErr := info.ELF().DWARF()
 	info.SetAutoServiceName("binary-fallback")
 	info.SetAutoServiceNamespace("k8s-fallback")
 	offsets, err := goexec.InspectOffsets(info, goFunctionNames(&cfg))
@@ -90,7 +92,7 @@ func TestDynamicSpansSDKParentAndDetach(t *testing.T) {
 	go func() { defer close(done); tracer.Run(ctx, eventContext, spans) }()
 	t.Cleanup(func() { cancel(); <-done; spans.Close() })
 	var probes []io.Closer
-	for index, name := range []string{"outer", "inner", "outerAsync", "outerDetached", "echo", "echoAsync", "HTTPHandler"} {
+	for index, name := range []string{"outer", "inner", "outerAsync", "outerDetached", "echo", "echoAsync", "HTTPHandler", "sdkOuter", "sdkInner"} {
 		probe, err := tracer.AttachLiveSpan(pid, info.Ns(), &config.CustomSpanSpec{Name: name, On: config.CustomSpanTarget{FunctionSpan: "main." + name}}, uint64(index+1), name, 1)
 		require.NoError(t, err)
 		probes = append(probes, probe)
@@ -149,12 +151,88 @@ func TestDynamicSpansSDKParentAndDetach(t *testing.T) {
 				require.Less(t, outer.End, inner.Start)
 			}
 			require.Less(t, inner.Start, inner.End)
-			require.Equal(t, "hello", inner.CustomSpan.Attrs["arg0"])
-			require.Equal(t, "7", inner.CustomSpan.Attrs["arg1"])
-			require.Equal(t, "hello!", inner.CustomSpan.Attrs["return0"])
-			require.Equal(t, "8", inner.CustomSpan.Attrs["return1"])
+			if dwarfErr == nil {
+				require.Equal(t, "hello", inner.CustomSpan.Attrs["arg0"])
+				require.Equal(t, "7", inner.CustomSpan.Attrs["arg1"])
+				require.Equal(t, "hello!", inner.CustomSpan.Attrs["return0"])
+				require.Equal(t, "8", inner.CustomSpan.Attrs["return1"])
+			} else {
+				for _, name := range []string{"arg0", "arg1", "return0", "return1"} {
+					require.NotContains(t, inner.CustomSpan.Attrs, name, "stripped free functions have no retained argument metadata")
+				}
+			}
 		})
 	}
+	for _, command := range []string{"SDK_CLIENT", "SDK_CLIENT_ASYNC", "SDK_CLIENT_INHERITED"} {
+		t.Run(command, func(t *testing.T) {
+			_, err := io.WriteString(stdin, command+"\n")
+			require.NoError(t, err)
+			var result struct {
+				Started, Exported []struct{ Name, Trace, ID, Parent string }
+			}
+			line := waitForClientLine(t, lines, "SDK_EXPORTED=", 10*time.Second)
+			require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(line, "SDK_EXPORTED=")), &result))
+			found := map[string]request.Span{}
+			timeout := time.After(10 * time.Second)
+			expected := 2
+			if command == "SDK_CLIENT_INHERITED" {
+				expected = 1
+			}
+			for len(found) < expected {
+				select {
+				case batch := <-received:
+					for _, span := range batch {
+						if span.Type == request.EventTypeCustomSpan {
+							found[span.Method] = span
+						}
+					}
+				case <-timeout:
+					t.Fatalf("missing dynamic spans: %v", found)
+				}
+			}
+			outer, inner := found["sdkOuter"], found["sdkInner"]
+			if command == "SDK_CLIENT_INHERITED" {
+				outer = inner
+			} else {
+				require.Equal(t, outer.SpanID, inner.ParentSpanID)
+				require.Equal(t, outer.TraceID, inner.TraceID)
+			}
+			wantParent := inner.SpanID.String()
+			if !goTracer.supportsContextPropagation() {
+				wantParent = outer.ParentSpanID.String()
+			}
+			for _, spans := range [][]struct{ Name, Trace, ID, Parent string }{result.Started, result.Exported} {
+				require.Len(t, spans, 8)
+				ids := map[string]string{}
+				for _, span := range spans {
+					ids[span.Name] = span.ID
+				}
+				for _, span := range spans {
+					switch span.Name {
+					case "sdk.server":
+						require.Equal(t, outer.ParentSpanID.String(), span.ID)
+						require.Equal(t, outer.TraceID.String(), span.Trace)
+						require.Equal(t, "0000000000000000", span.Parent)
+					case "sdk.client", "sdk.sibling":
+						require.Equal(t, wantParent, span.Parent, span.Name)
+						require.Equal(t, inner.TraceID.String(), span.Trace)
+					case "sdk.grandchild":
+						require.Equal(t, ids["sdk.client"], span.Parent)
+					case "sdk.newroot":
+						require.Equal(t, "0000000000000000", span.Parent)
+						require.NotEqual(t, inner.TraceID.String(), span.Trace)
+					case "sdk.unrelated":
+						require.Equal(t, "0100000000000000", span.Parent)
+					case "sdk.remote", "sdk.after":
+						require.Equal(t, ids["sdk.server"], span.Parent, span.Name)
+					default:
+						t.Fatalf("unexpected SDK span: %v", span)
+					}
+				}
+			}
+		})
+	}
+
 	testBinary, err := os.Executable()
 	require.NoError(t, err)
 	other := exec.CommandContext(t.Context(), testBinary, "-test.run=^TestDynamicGenericProcessHelper$")

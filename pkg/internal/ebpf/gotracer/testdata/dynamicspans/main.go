@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,12 +16,14 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 //go:noinline
@@ -114,8 +117,71 @@ func blockedEcho(url string, release <-chan struct{}) {
 	echoRequest(url, "/detachedProbe")
 }
 
+type exportedSpan struct {
+	Name, Trace, ID, Parent string
+}
+
+type sdkRecorder struct {
+	sync.Mutex
+	started, exported []exportedSpan
+}
+
+func sdkSpan(span sdktrace.ReadOnlySpan) exportedSpan {
+	return exportedSpan{span.Name(), span.SpanContext().TraceID().String(), span.SpanContext().SpanID().String(), span.Parent().SpanID().String()}
+}
+
+func (r *sdkRecorder) OnStart(_ context.Context, span sdktrace.ReadWriteSpan) {
+	r.Lock()
+	defer r.Unlock()
+	r.started = append(r.started, sdkSpan(span))
+}
+
+func (*sdkRecorder) OnEnd(sdktrace.ReadOnlySpan)      {}
+func (*sdkRecorder) ForceFlush(context.Context) error { return nil }
+func (*sdkRecorder) Shutdown(context.Context) error   { return nil }
+func (r *sdkRecorder) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlySpan) error {
+	r.Lock()
+	defer r.Unlock()
+	for _, span := range spans {
+		r.exported = append(r.exported, sdkSpan(span))
+	}
+	return nil
+}
+
+//go:noinline
+func sdkInner(ctx context.Context, tracer trace.Tracer) {
+	clientCtx, client := tracer.Start(ctx, "sdk.client", trace.WithSpanKind(trace.SpanKindClient))
+	_, grandchild := tracer.Start(clientCtx, "sdk.grandchild")
+	grandchild.End()
+	client.End()
+	_, sibling := tracer.Start(ctx, "sdk.sibling")
+	sibling.End()
+	_, root := tracer.Start(ctx, "sdk.newroot", trace.WithNewRoot())
+	root.End()
+	parent := trace.SpanContextFromContext(ctx)
+	_, unrelated := tracer.Start(trace.ContextWithSpanContext(ctx, parent.WithSpanID(trace.SpanID{1})), "sdk.unrelated")
+	unrelated.End()
+	_, remote := tracer.Start(trace.ContextWithRemoteSpanContext(ctx, parent), "sdk.remote")
+	remote.End()
+}
+
+//go:noinline
+func sdkOuter(ctx context.Context, tracer trace.Tracer, async bool) {
+	if async {
+		done := make(chan struct{})
+		go func() {
+			sdkInner(ctx, tracer)
+			close(done)
+		}()
+		<-done
+		return
+	}
+	sdkInner(ctx, tracer)
+}
+
 func main() {
-	options := []sdktrace.TracerProviderOption{sdktrace.WithResource(resource.NewSchemaless(
+	recorder := &sdkRecorder{}
+	options := []sdktrace.TracerProviderOption{sdktrace.WithSyncer(recorder), sdktrace.WithSpanProcessor(recorder), sdktrace.WithResource(resource.NewSchemaless(
 		attribute.String("service.name", "otel-remotedice"),
 		attribute.String("service.namespace", "manual"),
 	))}
@@ -185,6 +251,33 @@ func main() {
 				panic(err)
 			}
 			fmt.Printf("HTTP_RESULT=%s\n", body)
+			continue
+		}
+		if strings.HasPrefix(scanner.Text(), "SDK_CLIENT") {
+			recorder.Lock()
+			recorder.started, recorder.exported = nil, nil
+			recorder.Unlock()
+			ctx, server := tracer.Start(context.Background(), "sdk.server", trace.WithSpanKind(trace.SpanKindServer))
+			if scanner.Text() == "SDK_CLIENT_INHERITED" {
+				done := make(chan struct{})
+				go func() {
+					sdkInner(ctx, tracer)
+					close(done)
+				}()
+				<-done
+			} else {
+				sdkOuter(ctx, tracer, scanner.Text() == "SDK_CLIENT_ASYNC")
+			}
+			_, after := tracer.Start(ctx, "sdk.after")
+			after.End()
+			server.End()
+			recorder.Lock()
+			data, err := json.Marshal(struct{ Started, Exported []exportedSpan }{recorder.started, recorder.exported})
+			recorder.Unlock()
+			if err != nil {
+				panic(err)
+			}
+			fmt.Printf("SDK_EXPORTED=%s\n", data)
 			continue
 		}
 		_, parent := tracer.Start(context.Background(), "sdk.parent")

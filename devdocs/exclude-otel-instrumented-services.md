@@ -102,6 +102,13 @@ Once a service has its `ExportsOTelMetrics` / `ExportsOTelTraces` /
 - OTLP traces — [`pkg/export/otel/tracesgen/tracesgen.go`](../pkg/export/otel/tracesgen/tracesgen.go).
 - Prometheus — RED-metrics and span-metrics filters in [`pkg/export/prom/prom.go`](../pkg/export/prom/prom.go).
 
+Dynamic probe spans (`EventTypeCustomSpan`) are exempt from trace duplicate
+suppression because they add instrumentation requested through
+`dynamic_instrumentation`. Protocol spans remain suppressed. Explicit trace
+filters, service export settings, and sampling still apply to dynamic spans.
+The service remains reported in `obi.avoided.services` even while its dynamic
+spans are exported.
+
 Each detection event increments the `obi.avoided.services` internal metric
 (Prometheus name: `obi_avoided_services`). Normal series are labeled with the
 logical service name, service namespace, and the telemetry type that was

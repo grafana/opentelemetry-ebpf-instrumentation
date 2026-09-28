@@ -6,6 +6,7 @@
 package ebpf
 
 import (
+	"context"
 	"debug/elf"
 	"fmt"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 
 	"go.opentelemetry.io/obi/pkg/config"
 	"go.opentelemetry.io/obi/pkg/internal/goexec"
@@ -368,6 +370,8 @@ func TestMergeManualOverAuto(t *testing.T) {
 
 func TestSDKResourceOffsetsFromRetainedTypes(t *testing.T) {
 	provider := sdktrace.NewTracerProvider()
+	_, span := provider.Tracer("test").Start(context.Background(), "test")
+	defer span.End()
 	for _, stripped := range []bool{false, true} {
 		t.Run(fmt.Sprintf("stripped=%t", stripped), func(t *testing.T) {
 			binary := filepath.Join(t.TempDir(), "sdk-resource")
@@ -391,6 +395,8 @@ func TestSDKResourceOffsetsFromRetainedTypes(t *testing.T) {
 				{reflect.TypeOf(provider.Tracer("test")).Elem(), "provider", goexec.SDKTracerProviderPos},
 				{reflect.TypeOf(provider).Elem(), "resource", goexec.SDKProviderResourcePos},
 				{reflect.TypeFor[resource.Resource](), "attrs", goexec.SDKResourceAttrsPos},
+				{reflect.TypeOf(span).Elem(), "parent", goexec.SDKRecordingSpanParentPos},
+				{reflect.TypeFor[trace.SpanContext](), "remote", goexec.SpanContextRemotePos},
 				{reflect.TypeFor[attribute.Set](), "data", goexec.SDKAttributeSetDataPos},
 			} {
 				want, ok := field.typeOf.FieldByName(field.name)

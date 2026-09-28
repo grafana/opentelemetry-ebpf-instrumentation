@@ -837,3 +837,44 @@ func (f *fakeDwarfReader) Next() (*dwarf.Entry, error) {
 	f.entries = f.entries[1:]
 	return entry, nil
 }
+
+func TestSDKDynamicParentSupport(t *testing.T) {
+	for _, sdkVersion := range []string{"v1.43.0", "v1.46.0"} {
+		for _, arch := range []elf.Machine{elf.EM_X86_64, elf.EM_AARCH64} {
+			t.Run(fmt.Sprintf("%s/%s", sdkVersion, arch), func(t *testing.T) {
+				modules := moduleVersions{versions: map[string]string{}, sums: map[string]string{}, replacements: map[string]struct{}{}}
+				for _, module := range goSDKDynamicParentModules {
+					modules.versions[module.path] = sdkVersion
+					modules.sums[module.path] = module.sums[sdkVersion]
+				}
+				file := &elf.File{FileHeader: elf.FileHeader{Class: elf.ELFCLASS64, Machine: arch}}
+				offsets := FieldOffsets{}
+				setGoSDKDynamicParentSupport(offsets, modules, file)
+				assert.Equal(t, uint64(1), offsets[SDKDynamicParentSupported])
+				for _, module := range goSDKDynamicParentModules {
+					modules.replacements[module.path] = struct{}{}
+					setGoSDKDynamicParentSupport(offsets, modules, file)
+					assert.Equal(t, uint64(0), offsets[SDKDynamicParentSupported])
+					delete(modules.replacements, module.path)
+					for _, sum := range []string{"", "h1:unexpected"} {
+						modules.sums[module.path] = sum
+						setGoSDKDynamicParentSupport(offsets, modules, file)
+						assert.Equal(t, uint64(0), offsets[SDKDynamicParentSupported])
+					}
+					modules.sums[module.path] = module.sums[sdkVersion]
+					modules.versions[module.path] = "v1.47.0"
+					setGoSDKDynamicParentSupport(offsets, modules, file)
+					assert.Equal(t, uint64(0), offsets[SDKDynamicParentSupported])
+					modules.versions[module.path] = sdkVersion
+				}
+				modules.invalid = true
+				setGoSDKDynamicParentSupport(offsets, modules, file)
+				assert.Equal(t, uint64(0), offsets[SDKDynamicParentSupported])
+				modules.invalid = false
+				file.Machine = elf.EM_PPC64
+				setGoSDKDynamicParentSupport(offsets, modules, file)
+				assert.Equal(t, uint64(0), offsets[SDKDynamicParentSupported])
+			})
+		}
+	}
+}

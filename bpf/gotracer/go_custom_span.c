@@ -61,6 +61,15 @@ static __always_inline void go_custom_span_context(struct pt_regs *ctx,
     frame->current.flags = k_flag_sampled;
     if (go_dynamic_valid_context(parent)) {
         tp_from_parent(&frame->current, parent);
+        frame->sdk_parent_id = *(const u64 *)parent->span_id;
+        if (frame->parent == frame->sdk_parent_id) {
+            const struct go_dynamic_frame_key key = {.goroutine = goroutine, .id = frame->parent};
+            const struct go_dynamic_frame *previous_frame =
+                bpf_map_lookup_elem(&go_dynamic_span_frames, &key);
+            if (previous_frame && previous_frame->cookie) {
+                frame->sdk_parent_id = previous_frame->sdk_parent_id;
+            }
+        }
     } else {
         urand_bytes(frame->current.trace_id, sizeof(frame->current.trace_id));
     }

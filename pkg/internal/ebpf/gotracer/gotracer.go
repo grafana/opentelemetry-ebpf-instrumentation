@@ -523,7 +523,12 @@ func (p *Tracer) RegisterOffsets(fileInfo *exec.FileInfo, offsets *goexec.Offset
 	initMissingGoOffsets(&offTable, goChannelOffsetFields[:])
 	initMissingGoOffsets(&offTable, goHTTPClientRequestOffsetFields[:])
 	initMissingGoOffsets(&offTable, goAutoSDKSpanContextOffsetFields[:])
-	initMissingGoOffsets(&offTable, []goexec.GoOffset{goexec.SDKRecordingSpanContextPos, goexec.SDKRecordingSpanType})
+	initMissingGoOffsets(&offTable, []goexec.GoOffset{
+		goexec.SDKRecordingSpanContextPos,
+		goexec.SDKRecordingSpanType,
+		goexec.SDKRecordingSpanParentPos,
+		goexec.SpanContextRemotePos,
+	})
 	initMissingGoOffsets(&offTable, goSDKResourceOffsetFields[:])
 	initMissingGoOffsets(&offTable, goGRPCBufWriterOffsetFields[:])
 	offTable.Table[goexec.FramerPadLengthStackPos] = missingGoOffset
@@ -631,6 +636,9 @@ func (p *Tracer) RegisterOffsets(fileInfo *exec.FileInfo, offsets *goexec.Offset
 		goexec.MuxTemplatePos,
 		goexec.GinFullpathPos,
 		goexec.SDKRecordingSpanContextPos,
+		goexec.SDKRecordingSpanParentPos,
+		goexec.SpanContextRemotePos,
+		goexec.SDKDynamicParentSupported,
 		goexec.SDKTracerProviderPos,
 		goexec.SDKProviderResourcePos,
 		goexec.SDKResourceAttrsPos,
@@ -2072,6 +2080,7 @@ func (p *Tracer) GoProbes() map[string][]*ebpfcommon.ProbeDesc {
 
 	m["go.opentelemetry.io/otel/sdk/trace.(*tracer).Start"] = []*ebpfcommon.ProbeDesc{{Start: p.bpfObjects.ObiUprobeSdkTracerResource}}
 	if p.dynamicSpansEnabled {
+		m["go.opentelemetry.io/otel/sdk/trace.(*tracer).newRecordingSpan"] = []*ebpfcommon.ProbeDesc{{End: p.bpfObjects.ObiUprobeSdkNewRecordingSpanReturn}}
 		m["go.opentelemetry.io/otel/sdk/trace.(*tracer).Start"][0].End = p.bpfObjects.ObiUprobeSdkTracerStartReturn
 		m["go.opentelemetry.io/otel/sdk/trace.(*recordingSpan).End"] = []*ebpfcommon.ProbeDesc{{Start: p.bpfObjects.ObiUprobeSdkRecordingSpanEnd}}
 	}

@@ -3,6 +3,7 @@
 
 //go:build obi_bpf_ignore
 
+#include <common/go_stack.h>
 #include <common/preempt_guard.h>
 #include <gotracer/go_common.h>
 #include <shared/obi_ctx.h>
@@ -20,6 +21,60 @@ struct {
     __uint(max_entries, MAX_CONCURRENT_SHARED_REQUESTS);
     __uint(pinning, OBI_PIN_INTERNAL);
 } dynamic_sdk_contexts SEC(".maps");
+
+// newRecordingSpan returns before Start calls processors. Only its new private
+// parent is changed; the caller's shared context and the child's identity stay intact.
+SEC("uprobe/sdk_new_recording_span_return")
+int GUARDED_PROG(obi_uprobe_sdk_new_recording_span_return, struct pt_regs *, ctx) {
+    if (!g_bpf_probe_write_user_enabled) {
+        return 0;
+    }
+    off_table_t *offsets = get_offsets_table();
+    if (go_offset_of(offsets, (go_offset){.v = _sdk_dynamic_parent_supported}) != 1) {
+        return 0;
+    }
+    const u64 parent_offset =
+        go_offset_of(offsets, (go_offset){.v = _sdk_recording_span_parent_pos});
+    const u64 trace_offset = go_offset_of(offsets, (go_offset){.v = _span_context_trace_id_pos});
+    const u64 id_offset = go_offset_of(offsets, (go_offset){.v = _span_context_span_id_pos});
+    const u64 remote_offset = go_offset_of(offsets, (go_offset){.v = _span_context_remote_pos});
+    if (parent_offset == (u64)-1 || trace_offset == (u64)-1 || id_offset == (u64)-1 ||
+        remote_offset == (u64)-1) {
+        return 0;
+    }
+    go_addr_key_t goroutine = {};
+    go_addr_key_from_id(&goroutine, GOROUTINE_PTR(ctx));
+    go_dynamic_span_prune(&goroutine, go_obi_ctx__stack_off(ctx));
+    const u64 *head = bpf_map_lookup_elem(&go_dynamic_span_heads, &goroutine);
+    const tp_info_t *current = bpf_map_lookup_elem(&go_trace_map, &goroutine);
+    if (!head || !current || *head != *(const u64 *)current->span_id) {
+        return 0;
+    }
+    const struct go_dynamic_frame_key key = {.goroutine = goroutine, .id = *head};
+    const struct go_dynamic_frame *frame = bpf_map_lookup_elem(&go_dynamic_span_frames, &key);
+    if (!frame || !frame->cookie || !frame->sdk_parent_id) {
+        return 0;
+    }
+    unsigned char *span = GO_PARAM1(ctx);
+    tp_info_t parent = {};
+    bool remote = false;
+    if (!span ||
+        bpf_probe_read_user(
+            parent.trace_id, sizeof(parent.trace_id), span + parent_offset + trace_offset) ||
+        bpf_probe_read_user(
+            parent.span_id, sizeof(parent.span_id), span + parent_offset + id_offset) ||
+        bpf_probe_read_user(&remote, sizeof(remote), span + parent_offset + remote_offset) ||
+        remote || *(const u64 *)parent.span_id != frame->sdk_parent_id ||
+        bpf_memcmp(parent.trace_id, frame->current.trace_id, sizeof(parent.trace_id))) {
+        return 0;
+    }
+    if (bpf_probe_write_user(span + parent_offset + id_offset,
+                             frame->current.span_id,
+                             sizeof(frame->current.span_id))) {
+        bpf_dbg_printk("unable to set SDK span's dynamic parent");
+    }
+    return 0;
+}
 
 SEC("uprobe/sdk_tracer_start_return")
 int GUARDED_PROG(obi_uprobe_sdk_tracer_start_return, struct pt_regs *, ctx) {

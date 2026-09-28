@@ -172,6 +172,9 @@ typedef enum {
     _sdk_provider_resource_pos,
     _sdk_resource_attrs_pos,
     _sdk_attribute_set_data_pos,
+    _sdk_recording_span_parent_pos,
+    _span_context_remote_pos,
+    _sdk_dynamic_parent_supported,
     _last_go_offset,
 } go_offset_const;
 

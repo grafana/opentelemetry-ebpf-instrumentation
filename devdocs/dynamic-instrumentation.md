@@ -182,6 +182,12 @@ and `recordingSpan.End` track SDK span context for scoped calls on that goroutin
 An SDK-instrumented application can therefore receive additional OBI spans even
 when its existing spans are already exported by its SDK.
 
+Dynamic probe spans bypass the duplicate-trace suppression controlled by
+`discovery.exclude_otel_instrumented_services`. OBI continues suppressing
+protocol spans for SDK-instrumented services, which can still appear in the
+`obi.avoided.services` metric. Explicit trace filters, service export settings,
+and sampling still apply.
+
 OBI also reads `service.name` and `service.namespace` from the standard Go SDK's
 TracerProvider resource when the application starts an SDK span. This works when
 the provider was created before OBI attached, and with stripped Go executables.
@@ -199,11 +205,28 @@ creation preserves this ancestry. A newer SDK span activated in the child takes
 precedence. Inherited context is bounded to 30,000 goroutines, expires after
 `ttl`, and is cleared when the goroutine exits or is reused.
 
-The application is not modified: an SDK-created span does not receive a dynamic
-span as its parent through `context.Context`. Context handed to an already-running worker
-goroutine without an observable activation, non-recording SDK spans, custom SDK
-implementations, and spans ended out of nesting order can lack an accurate parent.
-When no parent context is available, OBI creates a root trace for the dynamic call.
+For supported standard Go SDKs, spans started inside a dynamic call can also
+become children of that dynamic span: `SDK server → dynamic span → SDK client`.
+OBI uses `bpf_probe_write_user` at `tracer.newRecordingSpan` return to update the
+new span's private parent ID before span processors run. It does not overwrite
+the caller's shared `context.Context`. The SDK exports its own child span;
+OBI's duplicate protocol spans remain suppressed after SDK export detection.
+The application must create SDK client spans and pass the server context, for
+example with `otelhttp.NewTransport` and `http.NewRequestWithContext`.
+
+Parent rewriting requires `CAP_SYS_ADMIN`, a kernel permitting
+`bpf_probe_write_user`, and validated module checksums and field offsets.
+Currently reviewed SDK and trace module versions are 1.43.0 and 1.46.0 on
+amd64/arm64; replaced, unversioned, and unreviewed modules are skipped.
+Without write support, dynamic spans still inherit SDK parents, but SDK children
+retain their original parents. Explicit new roots, remote or unrelated parents,
+and children of a newer SDK span are preserved. The SDK sampler and the context
+argument passed to processors still see the original parent context.
+
+Context handed to an already-running worker goroutine without an observable
+activation, non-recording SDK spans, custom SDK implementations, and spans ended
+out of nesting order can lack an accurate parent. When no parent context is
+available, OBI creates a root trace for the dynamic call.
 
 For Go register-ABI functions, OBI attempts automatic scalar and string capture
 from DWARF signatures, or retained runtime method metadata in stripped binaries.

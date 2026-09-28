@@ -216,15 +216,18 @@ var goPtrMethodRE = regexp.MustCompile(`^([A-Za-z_][\w./-]*?)\.\(\*([A-Za-z_]\w*
 func AddSDKContextOffsets(ef *elf.File, offsets *goexec.Offsets) {
 	fields := []struct {
 		typeName string
+		pkgPath  string
 		path     []string
 		offset   goexec.GoOffset
 	}{
-		{"*trace.recordingSpan", []string{"spanContext"}, goexec.SDKRecordingSpanContextPos},
-		{"*trace.tracer", []string{"provider"}, goexec.SDKTracerProviderPos},
-		{"*trace.TracerProvider", []string{"resource"}, goexec.SDKProviderResourcePos},
-		{"*resource.Resource", []string{"attrs"}, goexec.SDKResourceAttrsPos},
-		{"*attribute.Set", []string{"data"}, goexec.SDKAttributeSetDataPos},
-		{"*attribute.Set", []string{"equivalent", "iface"}, goexec.SDKAttributeSetDataPos},
+		{"*trace.recordingSpan", "go.opentelemetry.io/otel/sdk/trace", []string{"spanContext"}, goexec.SDKRecordingSpanContextPos},
+		{"*trace.recordingSpan", "go.opentelemetry.io/otel/sdk/trace", []string{"parent"}, goexec.SDKRecordingSpanParentPos},
+		{"trace.SpanContext", "go.opentelemetry.io/otel/trace", []string{"remote"}, goexec.SpanContextRemotePos},
+		{"*trace.tracer", "go.opentelemetry.io/otel/sdk/trace", []string{"provider"}, goexec.SDKTracerProviderPos},
+		{"*trace.TracerProvider", "go.opentelemetry.io/otel/sdk/trace", []string{"resource"}, goexec.SDKProviderResourcePos},
+		{"*resource.Resource", "go.opentelemetry.io/otel/sdk/resource", []string{"attrs"}, goexec.SDKResourceAttrsPos},
+		{"*attribute.Set", "go.opentelemetry.io/otel/attribute", []string{"data"}, goexec.SDKAttributeSetDataPos},
+		{"*attribute.Set", "go.opentelemetry.io/otel/attribute", []string{"equivalent", "iface"}, goexec.SDKAttributeSetDataPos},
 	}
 	var walker *gometa.Walker
 	for _, field := range fields {
@@ -238,13 +241,22 @@ func AddSDKContextOffsets(ef *elf.File, offsets *goexec.Offsets) {
 				return
 			}
 		}
-		t := walker.TypeByName(field.typeName)
-		if t == nil {
-			continue
-		}
-		if offset, ok := sdkRuntimeFieldOffset(t.Elem(), field.path); ok {
-			offsets.Field[field.offset] = offset
-		}
+		walker.Types(func(t *gometa.Type) bool {
+			if t.Name != field.typeName {
+				return true
+			}
+			if t.Kind == gometa.Pointer {
+				t = t.Elem()
+			}
+			if t == nil || t.PackagePath() != field.pkgPath {
+				return true
+			}
+			if offset, ok := sdkRuntimeFieldOffset(t, field.path); ok {
+				offsets.Field[field.offset] = offset
+				return false
+			}
+			return true
+		})
 	}
 }
 
