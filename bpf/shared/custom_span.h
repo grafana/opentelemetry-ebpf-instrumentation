@@ -31,7 +31,8 @@ struct custom_span_event {
     u8 arg_cnt;
     u8 has_trace_ctx;
     u8 pair_kind; // mirrors spec.pair_kind so userspace picks the right pair key
-    u8 _pad0a[3];
+    u8 trace_flags;
+    u8 _pad0a[2];
     u64 cookie;
     u64 timestamp;
     u32 global_pid;
@@ -43,6 +44,7 @@ struct custom_span_event {
     u64 g_ptr; // Go runtime g* — pair key on Go function_span (survives goroutine moves)
 
     obi_ctx_info_t trace_ctx;
+    unsigned char span_id[8];
 
     u8 arg_kind[k_custom_span_max_args];
     u16 arg_str_len[k_custom_span_max_args];

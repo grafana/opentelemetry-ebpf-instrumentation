@@ -88,7 +88,7 @@ func TestDynamicSpansSDKParentAndDetach(t *testing.T) {
 	go func() { defer close(done); tracer.Run(ctx, eventContext, spans) }()
 	t.Cleanup(func() { cancel(); <-done; spans.Close() })
 	var probes []io.Closer
-	for index, name := range []string{"outer", "inner", "outerAsync", "outerDetached", "echo", "echoAsync"} {
+	for index, name := range []string{"outer", "inner", "outerAsync", "outerDetached", "echo", "echoAsync", "HTTPHandler"} {
 		probe, err := tracer.AttachLiveSpan(pid, info.Ns(), &config.CustomSpanSpec{Name: name, On: config.CustomSpanTarget{FunctionSpan: "main." + name}}, uint64(index+1), name, 1)
 		require.NoError(t, err)
 		probes = append(probes, probe)
@@ -203,47 +203,111 @@ func TestDynamicSpansSDKParentAndDetach(t *testing.T) {
 			}
 		}
 	})
-	t.Run("HTTP_ECHO", func(t *testing.T) {
-		client := &http.Client{Timeout: 10 * time.Second}
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, strings.TrimPrefix(ready, "READY=")+"/echo", nil)
+
+	for _, mode := range []string{"HTTP_ECHO", "SDK_ECHO"} {
+		t.Run(mode, func(t *testing.T) {
+			expected := 10
+			var sdkContext []string
+			if mode == "SDK_ECHO" {
+				expected -= 2
+				_, err := io.WriteString(stdin, "SDK_ECHO\n")
+				require.NoError(t, err)
+				sdkContext = strings.Fields(strings.TrimPrefix(waitForClientLine(t, lines, "SDK_RESULT=", 10*time.Second), "SDK_RESULT="))
+			} else {
+				client := &http.Client{Timeout: 10 * time.Second}
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, strings.TrimPrefix(ready, "READY=")+"/echo", nil)
+				require.NoError(t, err)
+				response, err := client.Do(req)
+				require.NoError(t, err)
+				require.Equal(t, http.StatusNonAuthoritativeInfo, response.StatusCode)
+				require.NoError(t, response.Body.Close())
+			}
+			found := map[string]request.Span{}
+			timeout := time.After(10 * time.Second)
+			for len(found) < expected {
+				select {
+				case batch := <-received:
+					for _, span := range batch {
+						switch {
+						case span.Type == request.EventTypeCustomSpan:
+							found[span.Method] = span
+						case span.Type == request.EventTypeHTTP:
+							found["server:"+span.Path] = span
+						case span.Type == request.EventTypeHTTPClient:
+							found["client:"+span.Path] = span
+						}
+					}
+				case <-timeout:
+					t.Fatalf("expected the complete echo trace, got %v", found)
+				}
+			}
+			for name, span := range found {
+				t.Logf("%s: trace=%s span=%s parent=%s", name, span.TraceID, span.SpanID, span.ParentSpanID)
+			}
+			outer, inner := found["echoAsync"], found["echo"]
+			if mode == "SDK_ECHO" {
+				require.Equal(t, sdkContext[0], outer.TraceID.String())
+				require.Equal(t, sdkContext[1], outer.ParentSpanID.String())
+			} else {
+				server, handler := found["server:/echo"], found["HTTPHandler"]
+				require.False(t, server.ParentSpanID.IsValid(), "the external request has no incoming trace context")
+				require.Equal(t, http.StatusNonAuthoritativeInfo, server.Status, "the child goroutine writes the server response")
+				require.Equal(t, server.TraceID, handler.TraceID)
+				require.Equal(t, server.SpanID, handler.ParentSpanID)
+				require.Equal(t, handler.TraceID, outer.TraceID)
+				require.Equal(t, handler.SpanID, outer.ParentSpanID)
+			}
+			require.Equal(t, outer.SpanID, inner.ParentSpanID)
+			require.Equal(t, inner.SpanID, found["client:/echoBack"].ParentSpanID, "client call must use the active dynamic span")
+			require.Equal(t, outer.SpanID, found["client:/afterEcho"].ParentSpanID, "return must restore the inherited outer span")
+			require.Equal(t, outer.ParentSpanID, found["client:/afterAsync"].ParentSpanID, "return must restore the enclosing context")
+			for _, path := range []string{"/echoBack", "/afterEcho", "/afterAsync"} {
+				client, downstream := found["client:"+path], found["server:"+path]
+				require.Equal(t, outer.TraceID, client.TraceID)
+				require.Equal(t, client.TraceID, downstream.TraceID)
+				require.Equal(t, client.SpanID, downstream.ParentSpanID)
+			}
+		})
+	}
+
+	t.Run("DETACH_ACTIVE", func(t *testing.T) {
+		spec := &config.CustomSpanSpec{Name: "blocked", On: config.CustomSpanTarget{FunctionSpan: "main.blockedEcho"}}
+		probe, err := tracer.AttachLiveSpan(pid, info.Ns(), spec, 100, "blocked", 1)
 		require.NoError(t, err)
-		response, err := client.Do(req)
+		t.Cleanup(func() { _ = probe.Close() })
+		_, err = io.WriteString(stdin, "BLOCKED\n")
 		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, response.StatusCode)
-		require.NoError(t, response.Body.Close())
-		found := map[string]request.Span{}
+		parent := strings.Fields(strings.TrimPrefix(waitForClientLine(t, lines, "BLOCKED_CONTEXT=", 10*time.Second), "BLOCKED_CONTEXT="))
+		waitForClientLine(t, lines, "BLOCKED", 10*time.Second)
+		require.NoError(t, probe.Close())
+		replacement, err := tracer.AttachLiveSpan(pid, info.Ns(), spec, 101, "blocked", 2)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = replacement.Close() })
+		_, err = io.WriteString(stdin, "RELEASE\n")
+		require.NoError(t, err)
+		waitForClientLine(t, lines, "RELEASED", 10*time.Second)
+		found := map[request.EventType]request.Span{}
 		timeout := time.After(10 * time.Second)
-		for len(found) < 5 {
+		for len(found) < 2 {
 			select {
 			case batch := <-received:
 				for _, span := range batch {
-					switch {
-					case span.Type == request.EventTypeCustomSpan:
-						found[span.Method] = span
-					case span.Type == request.EventTypeHTTP && span.Path == "/echo":
-						found["server"] = span
-					case span.Type == request.EventTypeHTTP && span.Path == "/echoBack":
-						found["downstream"] = span
-					case span.Type == request.EventTypeHTTPClient && span.Path == "/echoBack":
-						found["client"] = span
+					require.NotEqual(t, request.EventTypeCustomSpan, span.Type, "a detached invocation must not emit a span")
+					if span.Path == "/detachedProbe" {
+						found[span.Type] = span
 					}
 				}
 			case <-timeout:
-				t.Fatalf("expected the complete HTTP echo trace, got %v", found)
+				t.Fatal("missing HTTP spans after removing an active dynamic probe")
 			}
 		}
-		for name, span := range found {
-			t.Logf("%s: trace=%s span=%s parent=%s ports=%d->%d", name, span.TraceID, span.SpanID, span.ParentSpanID, span.PeerPort, span.HostPort)
-		}
-		require.False(t, found["server"].ParentSpanID.IsValid(), "the external request has no incoming trace context")
-		require.Equal(t, found["server"].TraceID, found["echoAsync"].TraceID)
-		require.Equal(t, found["server"].SpanID, found["echoAsync"].ParentSpanID)
-		require.Equal(t, found["echoAsync"].SpanID, found["echo"].ParentSpanID)
-		require.Equal(t, found["echo"].TraceID, found["client"].TraceID)
-		require.Equal(t, found["server"].SpanID, found["client"].ParentSpanID, "HTTP client must retain its active server parent")
-		require.Equal(t, found["client"].TraceID, found["downstream"].TraceID)
-		require.Equal(t, found["client"].SpanID, found["downstream"].ParentSpanID)
+		client, server := found[request.EventTypeHTTPClient], found[request.EventTypeHTTP]
+		require.Equal(t, parent[0], client.TraceID.String())
+		require.Equal(t, parent[1], client.ParentSpanID.String(), "detachment must restore the SDK parent even when the spec slot is reused")
+		require.Equal(t, client.TraceID, server.TraceID)
+		require.Equal(t, client.SpanID, server.ParentSpanID)
 	})
+
 	for _, probe := range probes {
 		require.NoError(t, probe.Close())
 	}

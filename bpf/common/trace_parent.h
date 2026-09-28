@@ -272,7 +272,7 @@ static __always_inline tp_info_pid_t *find_go_parent_trace(const lw_thread_t lw_
     go_addr_key_t g_key = {};
     go_addr_key_from_id_and_pid(&g_key, (void *)lw_thread, pid);
 
-    u64 parent_id = find_parent_goroutine(&g_key);
+    u64 parent_id = find_goroutine_in_map(&go_trace_map, &g_key);
     if (parent_id) {
         go_addr_key_t p_key = {};
         go_addr_key_from_id_and_pid(&p_key, (void *)parent_id, pid);

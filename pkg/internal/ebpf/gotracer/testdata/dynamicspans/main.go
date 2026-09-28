@@ -71,8 +71,15 @@ func callDetached(text string, number int) (string, int) {
 }
 
 //go:noinline
-func echo(url string) {
-	response, err := http.Get(url + "/echoBack")
+func echo(w http.ResponseWriter, url string) {
+	echoRequest(url, "/echoBack")
+	if w != nil {
+		w.WriteHeader(http.StatusNonAuthoritativeInfo)
+	}
+}
+
+func echoRequest(url, path string) {
+	response, err := http.Get(url + path)
 	if err != nil {
 		panic(err)
 	}
@@ -81,13 +88,28 @@ func echo(url string) {
 }
 
 //go:noinline
-func echoAsync(url string) {
+func echoAsync(w http.ResponseWriter, url string) {
 	done := make(chan struct{})
 	go func() {
-		echo(url)
+		echo(w, url)
+		echoRequest(url, "/afterEcho")
 		close(done)
 	}()
 	<-done
+}
+
+//go:noinline
+func HTTPHandler(w http.ResponseWriter, url string) {
+	echoAsync(w, url)
+	echoRequest(url, "/afterAsync")
+	fmt.Fprint(w, "echo done")
+}
+
+//go:noinline
+func blockedEcho(url string, release <-chan struct{}) {
+	fmt.Println("BLOCKED")
+	<-release
+	echoRequest(url, "/detachedProbe")
 }
 
 func main() {
@@ -100,8 +122,7 @@ func main() {
 	defer downstream.Close()
 	server := newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/echo" {
-			echoAsync(downstream.URL)
-			fmt.Fprint(w, "echo done")
+			HTTPHandler(w, downstream.URL)
 			return
 		}
 		call := outer
@@ -116,9 +137,27 @@ func main() {
 	defer server.Close()
 	fmt.Println("READY=" + server.URL)
 	scanner := bufio.NewScanner(os.Stdin)
+	release := make(chan struct{})
+	released := make(chan struct{})
 	for scanner.Scan() {
 		if scanner.Text() == "EXIT" {
 			return
+		}
+		if scanner.Text() == "BLOCKED" {
+			go func() {
+				_, parent := tracer.Start(context.Background(), "sdk.blocked")
+				fmt.Printf("BLOCKED_CONTEXT=%s %s\n", parent.SpanContext().TraceID(), parent.SpanContext().SpanID())
+				blockedEcho(downstream.URL, release)
+				parent.End()
+				close(released)
+			}()
+			continue
+		}
+		if scanner.Text() == "RELEASE" {
+			close(release)
+			<-released
+			fmt.Println("RELEASED")
+			continue
 		}
 		if strings.HasPrefix(scanner.Text(), "HTTP") {
 			url := server.URL
@@ -140,6 +179,13 @@ func main() {
 			continue
 		}
 		_, parent := tracer.Start(context.Background(), "sdk.parent")
+		if scanner.Text() == "SDK_ECHO" {
+			echoAsync(nil, downstream.URL)
+			echoRequest(downstream.URL, "/afterAsync")
+			fmt.Printf("SDK_RESULT=%s %s\n", parent.SpanContext().TraceID(), parent.SpanContext().SpanID())
+			parent.End()
+			continue
+		}
 		call := outer
 		if scanner.Text() == "ASYNC" {
 			call = outerAsync

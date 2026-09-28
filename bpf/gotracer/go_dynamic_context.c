@@ -44,6 +44,13 @@ int GUARDED_PROG(obi_uprobe_sdk_tracer_start_return, struct pt_regs *, ctx) {
             state.current.span_id, sizeof(state.current.span_id), span + span_offset + id_offset)) {
         return 0;
     }
+    state.current.ts = bpf_ktime_get_ns();
+    const u64 flags_offset = go_offset_of(offsets, (go_offset){.v = _span_context_trace_flags_pos});
+    if (flags_offset != (u64)-1) {
+        bpf_probe_read_user(
+            &state.current.flags, sizeof(state.current.flags), span + span_offset + flags_offset);
+    }
+    go_dynamic_span_prune(&state.goroutine, 0);
     const tp_info_t *previous = bpf_map_lookup_elem(&go_trace_map, &state.goroutine);
     if (previous) {
         state.previous = *previous;

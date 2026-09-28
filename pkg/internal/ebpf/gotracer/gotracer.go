@@ -481,6 +481,11 @@ func (p *Tracer) constants() map[string]any {
 		"g_bpf_loop_enabled":             p.supportsBPFLoop,
 		"g_traces_ctx_v1_enabled":        p.traceCtxMapEnabled,
 		"g_dynamic_goroutines_enabled":   p.dynamicSpansEnabled,
+		"go_dynamic_span_ttl":            uint64(0),
+	}
+
+	if p.dynamicSpansEnabled {
+		m["go_dynamic_span_ttl"] = uint64(p.dynamicSpanTTL)
 	}
 
 	m["has_attach_cookie"] = uint32(0)

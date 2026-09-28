@@ -58,6 +58,8 @@ static __always_inline void custom_span_attach_trace_ctx(u64 pid_tgid,
     if (!ctx) {
         bpf_memset(&e->trace_ctx, 0, sizeof(e->trace_ctx));
         e->has_trace_ctx = 0;
+        e->trace_flags = 0;
+        bpf_memset(e->span_id, 0, sizeof(e->span_id));
         return;
     }
     bpf_memcpy(&e->trace_ctx, ctx, sizeof(*ctx));
@@ -289,7 +291,13 @@ static __always_inline struct obi_usdt_spec *custom_span_spec_lookup(struct pt_r
     return obi_usdt_spec_for_ctx(ctx);
 }
 
-static __always_inline int custom_span_emit(struct pt_regs *ctx, u8 kind) {
+typedef void (*custom_span_context_fn)(struct pt_regs *,
+                                       const struct obi_usdt_spec *,
+                                       u8,
+                                       struct custom_span_event *);
+
+static __always_inline int
+custom_span_emit(struct pt_regs *ctx, u8 kind, custom_span_context_fn context) {
     const u64 pid_tgid = bpf_get_current_pid_tgid();
     // Dynamic uprobes are PID-scoped; the socket tracer PID filter does not apply.
 
@@ -300,6 +308,9 @@ static __always_inline int custom_span_emit(struct pt_regs *ctx, u8 kind) {
 
     struct custom_span_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
     if (!e) {
+        if (context) {
+            context(ctx, spec, kind, NULL);
+        }
         return 0;
     }
 
@@ -307,6 +318,8 @@ static __always_inline int custom_span_emit(struct pt_regs *ctx, u8 kind) {
     e->kind = kind;
     e->arg_cnt = 0;
     e->has_trace_ctx = 0;
+    e->trace_flags = 0;
+    bpf_memset(e->span_id, 0, sizeof(e->span_id));
     e->pair_kind = spec->pair_kind;
     e->cookie = spec->cookie;
     e->timestamp = bpf_ktime_get_ns();
@@ -329,26 +342,9 @@ static __always_inline int custom_span_emit(struct pt_regs *ctx, u8 kind) {
         return 0;
     }
 
+    if (context) {
+        context(ctx, spec, kind, e);
+    }
     bpf_ringbuf_submit(e, get_flags());
     return 0;
-}
-
-SEC("uprobe/obi_custom_span_start")
-int GUARDED_PROG(obi_custom_span_start, struct pt_regs *, ctx) {
-    return custom_span_emit(ctx, k_custom_span_kind_start);
-}
-
-SEC("uprobe/obi_custom_span_end")
-int GUARDED_PROG(obi_custom_span_end, struct pt_regs *, ctx) {
-    return custom_span_emit(ctx, k_custom_span_kind_end);
-}
-
-SEC("uprobe/obi_custom_span_event")
-int GUARDED_PROG(obi_custom_span_event, struct pt_regs *, ctx) {
-    return custom_span_emit(ctx, k_custom_span_kind_single);
-}
-
-SEC("uretprobe/obi_custom_span_func_ret")
-int GUARDED_PROG(obi_custom_span_func_ret, struct pt_regs *, ctx) {
-    return custom_span_emit(ctx, k_custom_span_kind_end);
 }

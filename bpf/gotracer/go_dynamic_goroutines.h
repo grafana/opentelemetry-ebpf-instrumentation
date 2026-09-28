@@ -31,6 +31,12 @@ static __always_inline void go_dynamic_goroutine_event(const go_addr_key_t *goro
         return;
     }
 
+    if (parent && parent->addr != goroutine->addr) {
+        go_dynamic_span_inherit(goroutine, parent);
+    } else {
+        go_dynamic_span_exit(goroutine);
+    }
+
     struct go_dynamic_goroutine_event *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
     if (!event) {
         return;

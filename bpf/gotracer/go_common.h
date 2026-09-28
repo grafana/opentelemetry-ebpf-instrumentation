@@ -80,6 +80,7 @@ struct {
 } ongoing_client_connections SEC(".maps");
 
 #include <maps/go_trace_map.h>
+#include <gotracer/go_dynamic_spans.h>
 
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -144,18 +145,17 @@ static __always_inline void go_addr_key_from_id(go_addr_key_t *current, void *ad
     go_addr_key_from_id_and_pid(current, addr, pid);
 }
 
-static __always_inline u64 find_parent_goroutine(go_addr_key_t *current) {
+static __always_inline u64 find_goroutine_in_map(void *map, const go_addr_key_t *current) {
     if (!current) {
         return 0;
     }
 
     u64 r_addr = current->addr;
-    go_addr_key_t *parent = current;
+    const go_addr_key_t *parent = current;
 
     int attempts = 0;
     do {
-        tp_info_t *p_inv = bpf_map_lookup_elem(&go_trace_map, parent);
-        if (!p_inv) { // not this goroutine running the server request processing
+        if (!bpf_map_lookup_elem(map, parent)) {
             // Let's find the parent scope
             goroutine_metadata *g_metadata =
                 (goroutine_metadata *)bpf_map_lookup_elem(&ongoing_goroutines, parent);
@@ -213,7 +213,7 @@ static __always_inline void decode_go_traceparent(const unsigned char *buf,
     decode_hex(flags, f_id, FLAGS_CHAR_LEN);
 }
 
-static __always_inline void tp_from_parent(tp_info_t *tp, tp_info_t *parent) {
+static __always_inline void tp_from_parent(tp_info_t *tp, const tp_info_t *parent) {
     *((u64 *)tp->trace_id) = *((u64 *)parent->trace_id);
     *((u64 *)(tp->trace_id + 8)) = *((u64 *)(parent->trace_id + 8));
     *((u64 *)tp->parent_id) = *((u64 *)parent->span_id);
@@ -287,13 +287,17 @@ server_trace_parent(void *goroutine_addr, tp_info_t *tp, tp_info_t *found_tp) {
 }
 
 static __always_inline tp_info_t *tp_info_from_parent_go(go_addr_key_t *g_key, u64 *parent_found) {
+    go_dynamic_span_prune(g_key, 0);
     tp_info_t *tp = 0;
 
-    const u64 parent_id = find_parent_goroutine(g_key);
+    const u64 parent_id = find_goroutine_in_map(&go_trace_map, g_key);
     go_addr_key_t p_key = {};
     go_addr_key_from_id(&p_key, (void *)parent_id);
 
     if (parent_id) { // we found a parent request
+        if (parent_id != g_key->addr) {
+            go_dynamic_span_prune(&p_key, 0);
+        }
         tp = (tp_info_t *)bpf_map_lookup_elem(&go_trace_map, &p_key);
     }
 

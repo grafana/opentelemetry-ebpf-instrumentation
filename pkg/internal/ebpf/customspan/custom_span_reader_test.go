@@ -357,3 +357,47 @@ func TestGoStackGrowthDoesNotCreatePhantomParent(t *testing.T) {
 	require.Equal(t, parent.SpanID, child.ParentSpanID)
 	require.Zero(t, pairer.PendingLen())
 }
+
+func TestCustomSpanBuilderPreservesKernelContext(t *testing.T) {
+	registry := NewCustomSpanRegistry()
+	pairer := NewCustomSpanPairer(time.Minute)
+	builder := NewCustomSpanBuilder(registry, pairer)
+	registry.Register(NewCustomSpanDef(&config.CustomSpanSpec{Name: "call", On: config.CustomSpanTarget{FunctionSpan: "main.call"}}, 1))
+	start := makeRawEvent(1, obiebpf.CustomSpanKindStart, 0, 100)
+	start.PairKind, start.GPtr = obiebpf.ObiUSDTPairG(), 123
+	start.ID, start.TraceID, start.SpanID = [8]byte{1}, [16]byte{2}, [8]byte{3}
+	start.HasTraceCtx, start.TraceFlags = 1, 1
+	_, ready, err := builder.Build(&start)
+	require.NoError(t, err)
+	require.False(t, ready)
+	end := start
+	end.Kind, end.Timestamp = uint8(obiebpf.CustomSpanKindEnd), 200
+	span, ready, err := builder.Build(&end)
+	require.NoError(t, err)
+	require.True(t, ready)
+	require.Equal(t, start.ID[:], span.SpanID[:])
+	require.Equal(t, start.TraceID[:], span.TraceID[:])
+	require.Equal(t, start.SpanID[:], span.ParentSpanID[:])
+	require.Equal(t, start.TraceFlags, span.TraceFlags)
+}
+
+func TestCustomSpanBuilderIgnoresUnmatchedKernelReturn(t *testing.T) {
+	registry := NewCustomSpanRegistry()
+	pairer := NewCustomSpanPairer(time.Minute)
+	builder := NewCustomSpanBuilder(registry, pairer)
+	registry.Register(NewCustomSpanDef(&config.CustomSpanSpec{Name: "recursive", On: config.CustomSpanTarget{FunctionSpan: "main.recursive"}}, 1))
+	start := makeRawEvent(1, obiebpf.CustomSpanKindStart, 0, 100)
+	start.PairKind, start.GPtr, start.ID = obiebpf.ObiUSDTPairG(), 123, [8]byte{1}
+	_, _, err := builder.Build(&start)
+	require.NoError(t, err)
+	end := start
+	end.Kind, end.ID = uint8(obiebpf.CustomSpanKindEnd), [8]byte{}
+	_, ready, err := builder.Build(&end)
+	require.NoError(t, err)
+	require.False(t, ready, "a recursive call with a lost entry must not end its caller")
+	end.ID = start.ID
+	span, ready, err := builder.Build(&end)
+	require.NoError(t, err)
+	require.True(t, ready)
+	require.Equal(t, start.ID[:], span.SpanID[:])
+}

@@ -146,6 +146,8 @@ func makePairKey(_ *CustomSpanDef, ev *CustomSpanRawEvent) customSpanPairKey {
 }
 
 type customSpanPending struct {
+	KernelContext bool
+	TraceFlags    uint8
 	StackOffset   uint32
 	ID            trace.SpanID
 	ContextSpanID trace.SpanID
@@ -196,7 +198,7 @@ func (p *CustomSpanPairer) putStart(key customSpanPairKey, pending customSpanPen
 			stack = stack[:len(stack)-1]
 		}
 	}
-	if parent, ok := p.parentContextLocked(key, stack); ok {
+	if parent, ok := p.parentContextLocked(key, stack); ok && !pending.KernelContext {
 		pending.inherit(parent)
 	}
 	if !pending.TraceID.IsValid() {
@@ -206,7 +208,7 @@ func (p *CustomSpanPairer) putStart(key customSpanPairKey, pending customSpanPen
 	p.mu.Unlock()
 }
 
-func (p *CustomSpanPairer) takeStart(key customSpanPairKey) (customSpanPending, bool) {
+func (p *CustomSpanPairer) takeStart(key customSpanPairKey, id trace.SpanID) (customSpanPending, bool) {
 	p.mu.Lock()
 	cookie := key.Cookie
 	if key.Kind != 0 {
@@ -214,7 +216,7 @@ func (p *CustomSpanPairer) takeStart(key customSpanPairKey) (customSpanPending, 
 	}
 	stack := p.pending[key]
 	for i, value := range slices.Backward(stack) {
-		if value.Cookie != cookie {
+		if value.Cookie != cookie || (value.KernelContext && value.ID != id) {
 			continue
 		}
 
@@ -324,7 +326,7 @@ func (b *CustomSpanBuilder) Build(ev *CustomSpanRawEvent) (request.Span, bool, e
 		if !def.IsPair {
 			return request.Span{}, false, nil
 		}
-		pending, found := b.pairer.takeStart(makePairKey(def, ev))
+		pending, found := b.pairer.takeStart(makePairKey(def, ev), trace.SpanID(ev.ID))
 		if !found {
 			return request.Span{}, false, nil
 		}
@@ -336,15 +338,22 @@ func (b *CustomSpanBuilder) Build(ev *CustomSpanRawEvent) (request.Span, bool, e
 		}
 		key := makePairKey(def, ev)
 		b.pairer.putStart(key, b.newPending(def, ev))
-		pending, _ := b.pairer.takeStart(key)
+		pending, _ := b.pairer.takeStart(key, trace.SpanID(ev.ID))
 		return composeSpan(def, &pending, ev, ev.Timestamp), true, nil
 	}
 	return request.Span{}, false, nil
 }
 
 func (b *CustomSpanBuilder) newPending(def *CustomSpanDef, ev *CustomSpanRawEvent) customSpanPending {
+	id := trace.SpanID(ev.ID)
+	kernelContext := id.IsValid()
+	if !kernelContext {
+		id = idgen.RandomSpanID()
+	}
 	return customSpanPending{
-		ID:            idgen.RandomSpanID(),
+		ID:            id,
+		KernelContext: kernelContext,
+		TraceFlags:    ev.TraceFlags,
 		StackOffset:   ev.StackOffset,
 		StartedAt:     b.pairer.now(),
 		StartTimeNs:   ev.Timestamp,
@@ -406,6 +415,7 @@ func composeSpan(def *CustomSpanDef, pending *customSpanPending, ev *CustomSpanR
 		Type:         request.EventTypeCustomSpan,
 		SpanID:       pending.ID,
 		TraceID:      pending.TraceID,
+		TraceFlags:   pending.TraceFlags,
 		Method:       def.Name,
 		RequestStart: int64(pending.StartTimeNs),
 		Start:        int64(pending.StartTimeNs),

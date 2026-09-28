@@ -326,7 +326,7 @@ int GUARDED_PROG(obi_uprobe_server_handler_transport_handle_streams, struct pt_r
     go_addr_key_t g_key = {};
     go_addr_key_from_id(&g_key, goroutine_addr);
 
-    void *parent_go = (void *)find_parent_goroutine(&g_key);
+    void *parent_go = (void *)find_goroutine_in_map(&ongoing_server_connections, &g_key);
     if (parent_go) {
         bpf_dbg_printk("found parent goroutine for transport handler, parent_go=%llx", parent_go);
         go_addr_key_t p_key = {};

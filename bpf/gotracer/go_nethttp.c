@@ -537,7 +537,7 @@ static __always_inline int serve_http_returns(struct pt_regs *ctx) {
         bpf_map_lookup_elem(&ongoing_http_server_requests, &g_key);
 
     if (invocation == NULL) {
-        void *parent_go = (void *)find_parent_goroutine(&g_key);
+        void *parent_go = (void *)find_goroutine_in_map(&ongoing_http_server_requests, &g_key);
         if (parent_go) {
             bpf_dbg_printk("found parent goroutine for header, parent_go=%llx", parent_go);
             go_addr_key_t p_key = {};
@@ -1152,7 +1152,7 @@ int GUARDED_PROG(obi_uprobe_http2ResponseWriterStateWriteHeader, struct pt_regs 
         bpf_map_lookup_elem(&ongoing_http_server_requests, &g_key);
 
     if (invocation == NULL) {
-        void *parent_go = (void *)find_parent_goroutine(&g_key);
+        void *parent_go = (void *)find_goroutine_in_map(&ongoing_http_server_requests, &g_key);
         if (parent_go) {
             bpf_dbg_printk("found parent goroutine for header, parent_go=%llx", parent_go);
             go_addr_key_t p_key = {};
