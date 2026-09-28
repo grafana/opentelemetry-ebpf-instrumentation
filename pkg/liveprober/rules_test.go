@@ -4,9 +4,11 @@
 package liveprober // import "go.opentelemetry.io/obi/pkg/liveprober"
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -239,4 +241,27 @@ func TestShutdownCannotReattachRemainingRules(t *testing.T) {
 	for _, link := range tracer.links {
 		require.True(t, link.closed)
 	}
+}
+
+func TestConfigRuleReportsSymbolFailure(t *testing.T) {
+	m, _ := dynamicManager(t)
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	require.NoError(t, m.SetConfigRules([]config.DynamicInstrumentationRule{
+		ruleFor(t, "main.one"),
+		ruleFor(t, "missing"),
+	}))
+	require.Len(t, m.ListFunctions(nil), 1)
+	require.Contains(t, logs.String(), "rule=config/1")
+	require.Contains(t, logs.String(), "pid=123")
+	require.Contains(t, logs.String(), "function=missing")
+	require.Contains(t, logs.String(), "symbol missing")
+
+	firstLog := logs.String()
+	_, err := m.ApplyRule("api", ruleFor(t, "main.one"))
+	require.NoError(t, err)
+	require.Equal(t, firstLog, logs.String(), "unchanged failures must not repeat on reconciliation")
 }

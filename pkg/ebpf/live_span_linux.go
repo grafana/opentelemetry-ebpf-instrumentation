@@ -19,7 +19,7 @@ import (
 	ebpfcommon "go.opentelemetry.io/obi/pkg/ebpf/common"
 )
 
-// liveSpanProgram is implemented by generictracer. Keeping this interface in
+// liveSpanProgram is implemented by language tracers. Keeping this interface in
 // ebpf avoids making the shared instrumenter depend on a concrete tracer.
 type liveSpanProgram interface {
 	LiveSpanDescriptors(*config.CustomSpanSpec, uint64) []*ebpfcommon.USDTProbeDesc

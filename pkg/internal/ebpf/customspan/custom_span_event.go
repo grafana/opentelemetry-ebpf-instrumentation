@@ -3,7 +3,7 @@
 
 //go:build linux
 
-package generictracer // import "go.opentelemetry.io/obi/pkg/internal/ebpf/generictracer"
+package customspan // import "go.opentelemetry.io/obi/pkg/internal/ebpf/customspan"
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ import (
 	obiebpf "go.opentelemetry.io/obi/pkg/ebpf"
 )
 
-// Mirror bpf/generictracer/custom_span.h.
+// Mirror bpf/shared/custom_span.h.
 const (
 	customSpanMaxArgs = 12
 	customSpanStrLen  = 128

@@ -41,6 +41,7 @@
 #include <pid/pid_helpers.h>
 
 #include <gotracer/go_obi_ctx.h>
+#include <gotracer/go_dynamic_goroutines.h>
 
 typedef struct new_func_invocation {
     u64 parent;
@@ -721,6 +722,8 @@ int GUARDED_PROG(obi_uprobe_runtime_newproc1_return, struct pt_regs *, ctx) {
     void *goroutine_addr = (void *)GO_PARAM1(ctx);
     go_addr_key_t g_key = {.addr = (u64)goroutine_addr, .pid = pid};
 
+    go_addr_key_t p_key = {.pid = pid};
+
     // Lookup the newproc1 invocation metadata
     new_func_invocation_t *invocation = bpf_map_lookup_elem(&newproc1, &c_key);
     if (invocation == NULL) {
@@ -734,7 +737,7 @@ int GUARDED_PROG(obi_uprobe_runtime_newproc1_return, struct pt_regs *, ctx) {
 
     bpf_dbg_printk("goroutine_addr=%lx", goroutine_addr);
 
-    go_addr_key_t p_key = {.addr = (u64)parent_goroutine, .pid = pid};
+    p_key.addr = (u64)parent_goroutine;
 
     goroutine_metadata *g_metadata =
         (goroutine_metadata *)bpf_map_lookup_elem(&ongoing_goroutines, &p_key);
@@ -759,6 +762,8 @@ int GUARDED_PROG(obi_uprobe_runtime_newproc1_return, struct pt_regs *, ctx) {
 done:
     // Delete any stale info on go_trace_map
     bpf_map_delete_elem(&go_trace_map, &g_key);
+    // newproc1 returns before the new goroutine is made runnable.
+    go_dynamic_goroutine_event(&g_key, &p_key);
     bpf_map_delete_elem(&newproc1, &c_key);
 
     return 0;
@@ -1270,6 +1275,11 @@ int GUARDED_PROG(obi_uprobe_runtime_casgstatus, struct pt_regs *, ctx) {
     const u64 pid_tgid = bpf_get_current_pid_tgid();
 
     void *g = (void *)GO_PARAM1(ctx);
+    const u32 newval = (u32)(uintptr_t)GO_PARAM3(ctx);
+    if (newval == g_dead) {
+        const go_addr_key_t exited = {.addr = (u64)g, .pid = pid_from_pid_tgid(pid_tgid)};
+        go_dynamic_goroutine_event(&exited, NULL);
+    }
     void *m = NULL;
 
     bpf_probe_read_user(&m, sizeof(m), (void *)((char *)g + k_g_m_off));
@@ -1284,7 +1294,6 @@ int GUARDED_PROG(obi_uprobe_runtime_casgstatus, struct pt_regs *, ctx) {
         .pid = pid,
     };
 
-    const u32 newval = (u32)(uintptr_t)GO_PARAM3(ctx);
     switch (newval) {
     case g_running:
         go_obi_ctx__resume(g_pid_tgid, &g_key);

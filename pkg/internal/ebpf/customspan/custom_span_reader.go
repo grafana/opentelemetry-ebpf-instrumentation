@@ -3,7 +3,7 @@
 
 //go:build linux
 
-package generictracer // import "go.opentelemetry.io/obi/pkg/internal/ebpf/generictracer"
+package customspan // import "go.opentelemetry.io/obi/pkg/internal/ebpf/customspan"
 
 import (
 	"errors"
@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/hashicorp/golang-lru/v2/simplelru"
 
 	"go.opentelemetry.io/otel/trace"
 
@@ -168,13 +170,16 @@ type CustomSpanPairer struct {
 	ttl     time.Duration
 	mu      sync.Mutex
 	pending map[customSpanPairKey][]customSpanPending
+	parents *simplelru.LRU[customSpanPairKey, customSpanParent]
 }
 
 func NewCustomSpanPairer(ttl time.Duration) *CustomSpanPairer {
+	parents, _ := simplelru.NewLRU[customSpanPairKey, customSpanParent](maxCustomSpanGoroutines, nil)
 	return &CustomSpanPairer{
 		now:     time.Now,
 		ttl:     ttl,
 		pending: map[customSpanPairKey][]customSpanPending{},
+		parents: parents,
 	}
 }
 
@@ -191,13 +196,8 @@ func (p *CustomSpanPairer) putStart(key customSpanPairKey, pending customSpanPen
 			stack = stack[:len(stack)-1]
 		}
 	}
-	if len(stack) > 0 {
-		parent := stack[len(stack)-1]
-		if !pending.TraceID.IsValid() || (pending.TraceID == parent.TraceID && pending.ContextSpanID == parent.ContextSpanID) {
-			pending.TraceID = parent.TraceID
-			pending.SpanID = parent.ID
-			pending.HasTraceCtx = true
-		}
+	if parent, ok := p.parentContextLocked(key, stack); ok {
+		pending.inherit(parent)
 	}
 	if !pending.TraceID.IsValid() {
 		pending.TraceID = idgen.RandomTraceID()
@@ -234,6 +234,12 @@ func (p *CustomSpanPairer) takeStart(key customSpanPairKey) (customSpanPending, 
 func (p *CustomSpanPairer) Remove(cookie uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	for _, key := range p.parents.Keys() {
+		if parent, _ := p.parents.Peek(key); parent.Cookie == cookie {
+			p.parents.Remove(key)
+			delete(p.pending, key)
+		}
+	}
 	for key, stack := range p.pending {
 		for i, frame := range stack {
 			if frame.Cookie == cookie {
@@ -250,13 +256,19 @@ func (p *CustomSpanPairer) Remove(cookie uint64) {
 	}
 }
 
-// EvictExpired removes start frames older than TTL. Returns the count evicted.
+// EvictExpired removes incomplete calls and inherited context older than TTL.
 // Caller invokes this periodically; the package does not own a goroutine.
 func (p *CustomSpanPairer) EvictExpired() int {
 	cutoff := p.now().Add(-p.ttl)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	n := 0
+	for _, key := range p.parents.Keys() {
+		if parent, _ := p.parents.Peek(key); parent.StartedAt.Before(cutoff) {
+			p.parents.Remove(key)
+			n++
+		}
+	}
 	for k, v := range p.pending {
 		if len(v) > 0 && v[0].StartedAt.Before(cutoff) {
 			delete(p.pending, k)

@@ -9,14 +9,14 @@
 #include <bpfcore/bpf_tracing.h>
 #include <bpfcore/utils.h>
 
-#include <generictracer/custom_span.h>
+#include <shared/custom_span.h>
 #include <common/event_defs.h>
 #include <common/go_stack.h>
 #include <common/preempt_guard.h>
 #include <common/ringbuf.h>
 #include <common/usdt.h>
 #include <logger/bpf_dbg.h>
-#include <pid/pid.h>
+#include <pid/pid_helpers.h>
 #include <shared/obi_ctx.h>
 #include <maps/go_trace_map.h>
 
@@ -291,10 +291,7 @@ static __always_inline struct obi_usdt_spec *custom_span_spec_lookup(struct pt_r
 
 static __always_inline int custom_span_emit(struct pt_regs *ctx, u8 kind) {
     const u64 pid_tgid = bpf_get_current_pid_tgid();
-    const u32 pid = valid_pid(pid_tgid);
-    if (!pid) {
-        return 0;
-    }
+    // Dynamic uprobes are PID-scoped; the socket tracer PID filter does not apply.
 
     struct obi_usdt_spec *spec = custom_span_spec_lookup(ctx);
     if (!spec) {

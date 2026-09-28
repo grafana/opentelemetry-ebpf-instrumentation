@@ -46,6 +46,8 @@ int GUARDED_PROG(obi_capture_go_executable_identity, struct pt_regs *, ctx) {
     return 0;
 }
 
+#include <shared/custom_span.c>
+
 #include "go_runtime.c"
 #include "go_net.c"
 #include "go_net_tls.c"

@@ -138,6 +138,8 @@ func TestDynamicAPIConfigReload(t *testing.T) {
 	waitForFunctions()
 	writeConfig(`[{"service":[{"exe_path":"*/fixture"}],"spans":[{"name":"file.call","on":{"function_span":"main.outer"}}]}]`)
 	waitForFunctions("main.outer")
+	writeConfig(`[{"service":[{"exe_path":"*/fixture"}],"spans":[{"name":"file.call","on":{"function_span":"main.outer"}},{"name":"file.inner","on":{"function_span":"main.inner"}}]}]`)
+	waitForFunctions("main.inner", "main.outer")
 	writeConfig("[]")
 	waitForFunctions()
 	status, _, err = call(http.MethodGet, "/healthz", "")

@@ -240,15 +240,7 @@ func newGoTracersGroup(
 	cfg *obi.Config,
 	metrics imetrics.Reporter,
 ) []ebpf.Tracer {
-	tracers := []ebpf.Tracer{gotracer.New(pidFilter, cfg, metrics)}
-	// custom_span lives in generictracer; piggy-back it on Go binaries when
-	// the user has configured any custom spans so USDT and function-mode
-	// probes attach. gotracer dispatches EVENT_CUSTOM_SPAN records back to
-	// generictracer's handler via EBPFEventContext.CustomSpanHandler.
-	if cfg != nil && cfg.DynamicInstrumentation.IsEnabled() {
-		tracers = append(tracers, generictracer.New(pidFilter, cfg, metrics))
-	}
-	return tracers
+	return []ebpf.Tracer{gotracer.New(pidFilter, cfg, metrics)}
 }
 
 func newGenericTracersGroup(pidFilter ebpfcommon.ServiceFilter, cfg *obi.Config, metrics imetrics.Reporter) []ebpf.Tracer {

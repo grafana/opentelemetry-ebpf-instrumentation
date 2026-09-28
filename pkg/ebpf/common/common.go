@@ -103,6 +103,7 @@ const (
 	EventTypeJVMRuntimeMetrics     = uint8(BpfEventTypeK_eventTypeJvmRuntimeMetrics)      // JVM runtime metrics
 	EventTypeNodejsResource        = uint8(BpfEventTypeK_eventTypeNodejsResource)
 	EventTypeCustomSpan            = uint8(BpfEventTypeK_eventTypeCustomSpan)
+	EventTypeGoDynamicGoroutine    = uint8(BpfEventTypeK_eventTypeGoDynamicGoroutine)
 	EventTypeJVMGCDuration         = uint8(BpfEventTypeK_eventTypeJvmGcDuration) // JVM garbage-collection duration
 )
 
@@ -403,35 +404,25 @@ type EBPFEventContext struct {
 
 	internalEventHandlersMu sync.RWMutex
 	internalEventHandlers   map[uint8]func(*ringbuf.Record) error
-	// CustomSpanHandler is registered by whichever tracer owns the
-	// custom_span runtime (generictracer today). All tracers that read
-	// the shared ringbuf check this hook before falling back to their
-	// own parse — needed because gotracer and generictracer race for the
-	// SharedRingBuffer slot and the winner's parse must still dispatch
-	// EVENT_CUSTOM_SPAN records correctly.
+	// CustomSpanHandler routes dynamic spans and goroutine lifecycle records to
+	// the shared runtime, whichever language tracer reads the global ring buffer.
 	CustomSpanHandler CustomSpanRecordHandler
 	dynamicSpanMu     sync.RWMutex
 	dynamicSpanState  any
 
-	// CustomSpanSpecMgr is shared across every generictracer instance so
-	// spec IDs allocated against the global obi_usdt_specs BPF map don't
-	// collide when more than one tracer holds the custom_span runtime
-	// (e.g. one generictracer per non-Go executable and a piggy-backed
-	// generictracer for Go processes from newGoTracersGroup).
+	// CustomSpanSpecMgr allocates distinct IDs across language tracers sharing
+	// the global obi_usdt_specs BPF map.
 	CustomSpanSpecMgr USDTSpecManager
 }
 
-// CustomSpanRecordHandler dispatches a single EVENT_CUSTOM_SPAN ringbuf
-// record. (span, ready, handled, err) — handled=true when the record was a
-// custom_span event; ready=true when span is a completed result to emit.
+// CustomSpanRecordHandler dispatches dynamic span and goroutine lifecycle records.
+// It returns (span, ready, handled, err); ready means a completed span can be emitted.
 type CustomSpanRecordHandler func(record *ringbuf.Record) (request.Span, bool, bool, error)
 
-// DispatchCustomSpan runs ctx.CustomSpanHandler against record when the
-// record is an EVENT_CUSTOM_SPAN. Returns (span, skip, ok, err) where
-// ok=true means the record was a custom_span event and the caller
-// should stop further parsing.
+// DispatchCustomSpan routes dynamic instrumentation records to ctx.CustomSpanHandler.
+// It returns (span, skip, ok, err); ok means the caller should stop further parsing.
 func DispatchCustomSpan(ctx *EBPFEventContext, record *ringbuf.Record) (span request.Span, skip, ok bool, err error) {
-	if ctx == nil || record == nil || len(record.RawSample) == 0 || record.RawSample[0] != EventTypeCustomSpan {
+	if ctx == nil || record == nil || len(record.RawSample) == 0 || (record.RawSample[0] != EventTypeCustomSpan && record.RawSample[0] != EventTypeGoDynamicGoroutine) {
 		return request.Span{}, false, false, nil
 	}
 	ctx.dynamicSpanMu.RLock()
@@ -770,8 +761,8 @@ func ReadBPFTraceAsSpan(parseCtx *EBPFParseContext, cfg *config.EBPFTracer, reco
 		return finalizeParsedSpan(parseCtx, span, ignore, err)
 	case EventTypeGoChannelLink:
 		return readGoChannelLinkEvent(parseCtx, record)
-	case EventTypeCustomSpan:
-		// custom_span events are dispatched out-of-band via the shared
+	case EventTypeCustomSpan, EventTypeGoDynamicGoroutine:
+		// Dynamic instrumentation events are dispatched out-of-band via the shared
 		// EBPFEventContext.CustomSpanHandler; the caller (tracer-specific
 		// parse) must have already routed this record. Ignore here so we
 		// never misinterpret the bytes as an HTTP/Memcached span.

@@ -244,6 +244,7 @@ func (m *Manager) reconcileLocked() error {
 	var joined error
 	for _, id := range m.ruleIDsLocked() {
 		rule := m.rules[id]
+		previousResults := rule.results
 		rule.results = nil
 		rule.matched = m.matchingPIDsLocked(rule.definition.Service)
 		for _, pid := range rule.matched {
@@ -347,6 +348,14 @@ func (m *Manager) reconcileLocked() error {
 		}
 		if len(rule.results) == 0 {
 			rule.results = []ProbeResult{{Status: "pending", Error: "no matching process discovered"}}
+		}
+		if strings.HasPrefix(id, "config/") {
+			for _, result := range rule.results {
+				if result.Status == "error" && !slices.Contains(previousResults, result) {
+					slog.Warn("dynamic instrumentation rule failed", "rule", id, "pid", result.PID,
+						"function", result.Function, "span_name", result.SpanName, "error", result.Error)
+				}
+			}
 		}
 		m.rules[id] = rule
 	}

@@ -138,18 +138,23 @@ func TestGoChannelLinkProbesRequireChannelOffsets(t *testing.T) {
 	}
 }
 
-// runtime.casgstatus fires on every goroutine status transition and exists only
-// to keep traces_ctx_v1 current, so it must not be attached when nothing reads
-// that map. Built through New so the config predicate is covered too.
-func TestCasgstatusProbeFollowsTraceContextPopulation(t *testing.T) {
+// Built through New so both feature configuration predicates are covered.
+func TestCasgstatusProbeFollowsContextFeatures(t *testing.T) {
 	disableContextPropagationForTest(t)
 
 	for _, tc := range []struct {
 		name     string
 		cfg      *obi.Config
 		expected bool
+		dynamic  bool
 	}{
 		{name: "default", cfg: &obi.Config{}, expected: false},
+		{
+			name:     "dynamic spans",
+			cfg:      &obi.Config{DynamicInstrumentation: config.DynamicInstrumentationConfig{Enabled: true}},
+			dynamic:  true,
+			expected: true,
+		},
 		{
 			name:     "explicit setting",
 			cfg:      &obi.Config{EBPF: config.EBPFTracer{PopulateTraceContext: true}},
@@ -174,6 +179,7 @@ func TestCasgstatusProbeFollowsTraceContextPopulation(t *testing.T) {
 			require.Equal(t, tc.expected, tracer.constants()["g_traces_ctx_v1_enabled"])
 
 			_, attached := tracer.GoProbes()["runtime.casgstatus"]
+			require.Equal(t, tc.dynamic, tracer.constants()["g_dynamic_goroutines_enabled"])
 			require.Equal(t, tc.expected, attached)
 		})
 	}

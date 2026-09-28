@@ -37,6 +37,10 @@ receiver such as `main.(*Checkout).PlaceOrder` works literally. Inlined function
 without a separately emitted body cannot be probed. Go's runtime function table
 also permits name resolution in stripped executables.
 
+Go handler factories can be inlined while their returned closures remain as
+symbols such as `std.Setup.HTTPHandler.func1`. To instrument those closures, use
+`*HTTPHandler*`; `*HTTPHandler` only matches symbols ending in `HTTPHandler`.
+
 ## API
 
 The HTTP listener is optional and does not require authentication. Set
@@ -105,6 +109,9 @@ the named-function API above resolves addresses and return sites inside OBI.
 When OBI is started with a configuration file, it polls that path and reconciles
 changes to `dynamic_instrumentation.rules`. Replacing the file atomically or
 updating a ConfigMap symlink works. Invalid updates preserve the previous rules.
+Symbol resolution and attachment failures are logged with the rule ID, PID,
+function pattern or symbol, and error. Other valid probes remain attached.
+The GET probes endpoint lists successful attachments only.
 API rules survive file reloads. Other configuration changes, including listener
 and cache settings, take effect at startup only. Configuration read from standard
 input has no file to watch.
@@ -113,7 +120,7 @@ input has no file to watch.
 | --- | --- | --- |
 | `watch_interval` | `1s` | Configuration polling interval. |
 | `request_timeout` | `10s` | Maximum wait for asynchronous discovery in an API response. |
-| `ttl` | `5m` | Expiry of incomplete span pairs, not attached probes. |
+| `ttl` | `5m` | Expiry of incomplete span pairs and inherited goroutine context, not attached probes. |
 | `max_probes` | `1024` | Maximum concurrently managed PID/function probes. |
 | `symbol_cache_entries` | `32` | Maximum executable identities in each tracer's LRU. |
 | `symbol_cache_bytes` | `67108864` | Total estimated symbol storage per tracer's LRU. |
@@ -139,8 +146,15 @@ and `recordingSpan.End` track SDK span context for scoped calls on that goroutin
 An SDK-instrumented application can therefore receive additional OBI spans even
 when its existing spans are already exported by its SDK.
 
+When a Go function launches a goroutine, OBI snapshots its active dynamic span or
+SDK/server context at creation. Dynamic calls in the child inherit that parent,
+even if the creating function returns before the child runs. Nested goroutine
+creation preserves this ancestry. A newer SDK span activated in the child takes
+precedence. Inherited context is bounded to 30,000 goroutines, expires after
+`ttl`, and is cleared when the goroutine exits or is reused.
+
 The application is not modified: an SDK-created span does not receive a dynamic
-span as its parent through `context.Context`. Context handed to an unrelated
+span as its parent through `context.Context`. Context handed to an already-running worker
 goroutine without an observable activation, non-recording SDK spans, custom SDK
 implementations, and spans ended out of nesting order can lack an accurate parent.
 When no parent context is available, OBI creates a root trace for the dynamic call.

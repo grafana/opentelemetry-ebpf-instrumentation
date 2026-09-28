@@ -24,6 +24,7 @@ import (
 	"slices"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/cilium/ebpf"
@@ -42,6 +43,7 @@ import (
 	"go.opentelemetry.io/obi/pkg/ebpf/ringbuf"
 	"go.opentelemetry.io/obi/pkg/export/imetrics"
 	ebpfconvenience "go.opentelemetry.io/obi/pkg/internal/ebpf/convenience"
+	"go.opentelemetry.io/obi/pkg/internal/ebpf/customspan"
 	"go.opentelemetry.io/obi/pkg/internal/ebpf/uprobe"
 	"go.opentelemetry.io/obi/pkg/internal/goexec"
 	"go.opentelemetry.io/obi/pkg/internal/procs"
@@ -305,6 +307,8 @@ type Tracer struct {
 	supportsBPFLoop                   bool
 	traceCtxMapEnabled                bool
 	dynamicSpansEnabled               bool
+	dynamicSpanTTL                    time.Duration
+	customSpan                        *customspan.Runtime
 	runtimeMetricsEnabled             bool
 	runtimeMetricTargetKeys           map[runtimeMetricTargetKey]BpfPidInfo
 	goChannelOffsetsByExecutable      map[executableIdentity]bool
@@ -341,6 +345,7 @@ func New(
 		supportsBPFLoop:                   ebpfcommon.SupportsEBPFLoops(log, cfg.EBPF.OverrideBPFLoopEnabled),
 		traceCtxMapEnabled:                cfg.PopulateTraceContext(),
 		dynamicSpansEnabled:               cfg.DynamicInstrumentation.IsEnabled(),
+		dynamicSpanTTL:                    cfg.DynamicInstrumentation.TTL,
 		runtimeMetricsEnabled:             cfg.AppRuntimeMetricsEnabled(),
 		runtimeMetricTargetKeys:           map[runtimeMetricTargetKey]BpfPidInfo{},
 		goChannelOffsetsByExecutable:      map[executableIdentity]bool{},
@@ -475,6 +480,12 @@ func (p *Tracer) constants() map[string]any {
 		"g_bpf_traceparent_enabled":      true,
 		"g_bpf_loop_enabled":             p.supportsBPFLoop,
 		"g_traces_ctx_v1_enabled":        p.traceCtxMapEnabled,
+		"g_dynamic_goroutines_enabled":   p.dynamicSpansEnabled,
+	}
+
+	m["has_attach_cookie"] = uint32(0)
+	if ebpfcommon.HasAttachCookie() {
+		m["has_attach_cookie"] = uint32(1)
 	}
 
 	if p.cfg.TrackRequestHeaders ||
@@ -2041,8 +2052,8 @@ func (p *Tracer) GoProbes() map[string][]*ebpfcommon.ProbeDesc {
 		}}
 	}
 
-	// runtime.casgstatus fires on every goroutine status transition and exists only
-	// to keep traces_ctx_v1 pointing at the span the thread is currently running
+	// runtime.casgstatus tracks the active thread context and clears dynamic
+	// span inheritance when a goroutine exits.
 	if p.traceCtxMapEnabled {
 		m["runtime.casgstatus"] = []*ebpfcommon.ProbeDesc{{
 			Start: p.bpfObjects.ObiUprobeRuntimeCasgstatus,
@@ -2465,6 +2476,7 @@ func (p *Tracer) Run(ctx context.Context, ebpfEventContext *ebpfcommon.EBPFEvent
 	}()
 
 	p.SetEventContext(ebpfEventContext)
+	go p.customSpan.Run(ctx)
 
 	if !p.traceCtxMapEnabled {
 		ebpfconvenience.DrainTraceContextMap[BpfObiCtxInfoT](p.log, p.bpfObjects.TracesCtxV1)
@@ -2500,6 +2512,9 @@ func (p *Tracer) Run(ctx context.Context, ebpfEventContext *ebpfcommon.EBPFEvent
 }
 
 func (p *Tracer) SetEventContext(eventContext *ebpfcommon.EBPFEventContext) {
+	if p.dynamicSpansEnabled && p.customSpan == nil {
+		p.customSpan = customspan.New(p.dynamicSpanTTL, eventContext, p.log)
+	}
 	eventContext.RegisterInternalEventHandler(
 		ebpfcommon.EventTypeGoAutoActivated,
 		func(record *ringbuf.Record) error {
