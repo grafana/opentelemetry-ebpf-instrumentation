@@ -320,6 +320,7 @@ func (p *Tracer) constants() map[string]any {
 	}
 
 	m["g_traces_ctx_v1_enabled"] = p.traceCtxMapEnabled
+	m["g_bpf_probe_write_user_enabled"] = p.cfg.DynamicInstrumentation.IsEnabled() && ebpfcommon.SupportsContextPropagationWithProbe(p.log)
 	m["has_attach_cookie"] = uint32(0)
 	if ebpfcommon.HasAttachCookie() {
 		m["has_attach_cookie"] = uint32(1)

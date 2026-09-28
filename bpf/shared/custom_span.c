@@ -23,13 +23,7 @@
 
 struct custom_span_event _custom_span_event = {};
 
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, k_obi_usdt_max_spec_cnt);
-    __type(key, u64);
-    __type(value, u64);
-    __uint(pinning, OBI_PIN_INTERNAL);
-} obi_dynamic_invocations SEC(".maps");
+#include <common/maps/dynamic_invocations.h>
 
 // has_attach_cookie is patched to 1 by userspace at load time when the
 // running kernel exports bpf_get_attach_cookie (≥5.15). On older kernels it

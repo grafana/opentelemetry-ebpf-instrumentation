@@ -137,7 +137,7 @@ func makePairKey(_ *CustomSpanDef, ev *CustomSpanRawEvent) customSpanPairKey {
 	switch ev.PairKind {
 	case 1: // obiUSDTPairTid
 		k.Key = uint64(ev.GlobalTid)
-	case 2: // obiUSDTPairG
+	case 2, 3: // Go goroutine or Java invocation ID
 		k.Key = ev.GPtr
 	default: // obiUSDTPairArg0
 		k.Key = ev.ArgInt[0]

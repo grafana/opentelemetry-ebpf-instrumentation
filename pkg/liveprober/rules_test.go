@@ -265,3 +265,35 @@ func TestConfigRuleReportsSymbolFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, firstLog, logs.String(), "unchanged failures must not repeat on reconciliation")
 }
+
+type changingSymbolsTracer struct {
+	fakeTracer
+	symbols []string
+	changed bool
+}
+
+func (t *changingSymbolsTracer) ResolveLiveSymbols(app.PID, string) ([]string, error) {
+	return t.symbols, nil
+}
+
+func (t *changingSymbolsTracer) LiveSymbolsChanged() bool {
+	changed := t.changed
+	t.changed = false
+	return changed
+}
+
+func TestRulesRefreshWhenJavaMethodsLoad(t *testing.T) {
+	manager, _ := dynamicManager(t)
+	tracer := &changingSymbolsTracer{symbols: []string{"example.Service.first"}}
+	require.NoError(t, manager.RegisterTarget(123, 1, tracer, nil))
+	results, err := manager.ApplyRule("java", ruleFor(t, "example.Service.*"))
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	tracer.symbols = append(tracer.symbols, "example.Service.late")
+	tracer.changed = true
+	manager.RefreshMatches()
+	require.Len(t, manager.ListFunctions(nil), 2)
+	require.Len(t, tracer.links, 2)
+	manager.RefreshMatches()
+	require.Len(t, tracer.links, 2, "unchanged class catalog must not reattach probes")
+}

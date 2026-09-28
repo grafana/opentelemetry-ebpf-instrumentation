@@ -49,6 +49,8 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter-api:5.14.4")
     testImplementation("org.junit.platform:junit-platform-launcher:1.14.4")
     testImplementation("org.awaitility:awaitility:4.3.0")
+    testImplementation("io.opentelemetry:opentelemetry-sdk:1.55.0")
+    testImplementation("io.opentelemetry:opentelemetry-sdk-testing:1.55.0")
 
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.14.4")
 }
@@ -57,6 +59,9 @@ tasks.register("prepareKotlinBuildScriptModel"){}
 
 tasks.test {
     useJUnitPlatform()
+    dependsOn(tasks.shadowJar)
+    systemProperty("obi.test.classpath", sourceSets.test.get().output.asPath + File.pathSeparator + configurations.testRuntimeClasspath.get().asPath)
+    systemProperty("obi.agent.jar", tasks.shadowJar.get().archiveFile.get().asFile.absolutePath)
 }
 
 // Automatic JNI header generation during compilation

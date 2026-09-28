@@ -34,3 +34,7 @@ func (pt *ProcessTracer) ResolveLiveSymbols(_ app.PID, _ string) ([]string, erro
 }
 
 func AddSDKContextOffsets(_ *elf.File, _ *goexec.Offsets) {}
+
+func (pt *ProcessTracer) RegisterJavaSpan(app.PID, *config.CustomSpanSpec, uint64, string, uint64) (io.Closer, error) {
+	return nil, errors.New("java dynamic probes require Linux")
+}

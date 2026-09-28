@@ -14,7 +14,10 @@ public enum OperationType {
   // virtual thread unmounted from the calling carrier; payload unused
   VT_UNMOUNT((byte) 5),
   JVM_RUNTIME_SNAPSHOT((byte) 6),
-  JVM_GC_DURATION((byte) 7);
+  JVM_GC_DURATION((byte) 7),
+  DYNAMIC_SPAN_START((byte) 8),
+  DYNAMIC_SPAN_END((byte) 9),
+  DYNAMIC_READY((byte) 10);
 
   public final byte code;
 

@@ -89,6 +89,7 @@ type traceAttacher struct {
 
 	DynamicPIDSelector     *DynamicPIDSelector
 	DynamicInstrumentation *liveprober.Manager
+	JavaDynamic            *javaagent.DynamicRegistry
 
 	// processResourceDetector finds resources like the service.name, service.namespace and service.version,
 	// from the process binary or the process deployment directory.
@@ -199,7 +200,11 @@ func (ta *traceAttacher) attacherLoop(_ context.Context) (swarm.RunFunc, error) 
 							ta.DynamicInstrumentation.SetService(int(fi.Pid()), fi.ServiceAttrs())
 							tracer := ta.existingTracers[executableKey(fi)].tracer
 							if tracer != nil {
-								if err := ta.DynamicInstrumentation.RegisterTarget(int(fi.Pid()), fi.Ns(), tracer, fi.ServiceAttrs); err != nil {
+								var target liveprober.TargetTracer = tracer
+								if instr.Obj.Type == svc.InstrumentableJava && ta.JavaDynamic != nil {
+									target = ta.JavaDynamic.Target(fi.Pid(), tracer)
+								}
+								if err := ta.DynamicInstrumentation.RegisterTarget(int(fi.Pid()), fi.Ns(), target, fi.ServiceAttrs); err != nil {
 									ta.log.Warn("registering dynamic probe target", "pid", fi.Pid(), "error", err)
 								}
 							}
@@ -645,6 +650,9 @@ func (ta *traceAttacher) unregisterDynamicFileInfo(ie *ebpf.Instrumentable) {
 func (ta *traceAttacher) notifyProcessDeletion(ctx context.Context, ie *ebpf.Instrumentable) {
 	if ta.DynamicInstrumentation != nil {
 		ta.DynamicInstrumentation.UnregisterTarget(int(ie.FileInfo.Pid()))
+		if ta.JavaDynamic != nil {
+			ta.JavaDynamic.Remove(ie.FileInfo.Pid())
+		}
 	}
 	ta.unregisterDynamicFileInfo(ie)
 	key := executableKey(ie.FileInfo)

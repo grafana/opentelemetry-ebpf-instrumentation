@@ -1,8 +1,8 @@
 # Dynamic instrumentation
 
 Dynamic instrumentation adds internal spans to running processes without restarting
-OBI. OBI discovers the process, opens its executable through `/proc`, resolves
-function symbols, and owns the resulting uprobe links. Configure it separately
+OBI. OBI discovers processes and instruments native/Go functions with uprobes.
+For Java, its injectable Byte Buddy agent instruments methods with enter/exit advice. Configure it separately
 from application discovery and log enrichment:
 
 ```yaml
@@ -67,7 +67,8 @@ later, until removed or OBI exits. API rules are held in memory.
 
 The response contains `id` and a `probes` list with the host PID, resolved function,
 span name, OpenTelemetry service name and namespace, status, and any error.
-`attached` means the kernel accepted the attachment; it does not guarantee that
+`attached` means the kernel accepted a uprobe attachment or the Java agent
+successfully retransformed the selected methods; it does not guarantee that
 the function has executed or that an exporter delivered its spans.
 
 | HTTP status | Meaning |
@@ -85,8 +86,8 @@ curl --get http://127.0.0.1:8089/v1/dynamic-instrumentation/probes \
   --data-urlencode 'service=[{"target_pids":[1234]}]'
 ```
 
-List the available function symbols in the main executable of each matching
-process, using the same `service` selectors:
+List the available function symbols in each matching process's main executable,
+or its loaded Java methods, using the same `service` selectors:
 
 ```sh
 curl --get http://127.0.0.1:8089/v1/dynamic-instrumentation/symbols \
@@ -292,6 +293,115 @@ a marker, and `usdt_span: "provider:operation"` pairs `operation_start` and
 `operation_end` using their first integer argument as the correlation key. Explicit
 `attrs` and USDT string `match` filters use the original POC schema.
 
-Dynamic attachments require Linux amd64 or arm64 and attach-cookie support
+Native/Go dynamic attachments require Linux amd64 or arm64 and attach-cookie support
 (normally kernel 5.15 or newer). An unsupported kernel reports an attachment error;
 OBI's existing instrumentation retains its original kernel requirements.
+
+## Java methods and values
+
+Enable `javaagent.enabled` and `dynamic_instrumentation` at OBI startup. OBI loads
+its Java agent into matching JVMs and uses the same rule, symbols, probes, DELETE,
+and file-reload APIs as native/Go instrumentation:
+
+```yaml
+javaagent:
+  enabled: true
+dynamic_instrumentation:
+  enabled: true
+  listen_address: 0.0.0.0:8089
+  rules:
+    - service:
+        - open_ports: "8080"
+          languages: [java]
+      spans:
+        - name: checkout
+          on:
+            function_span: "com.example.CheckoutService.*Order"
+```
+
+Java symbols use `fully.qualified.Class.method`, including `$` for nested classes.
+An attachment covers all overloads of that method name and all loaded definitions
+of that class. Each PID/method has one probe entry and invocation counter. The
+symbols endpoint lists loaded, modifiable methods; class-load notifications cause
+rules to be reconciled as more methods become available. Constructors, native,
+abstract, synthetic and lambda methods, JDK classes, and instrumentation libraries
+are excluded. Java supports `function_span`; native offsets, USDT targets and
+`function_noret` are not Java method targets.
+
+Match the fully qualified method name without parameter types or a JVM descriptor.
+For example, these patterns select methods in `com.example.CheckoutService`:
+
+| `function_span` | Matches |
+| --- | --- |
+| `com.example.CheckoutService.placeOrder` | All `placeOrder` overloads, such as `placeOrder(String)` and `placeOrder(long)`. |
+| `com.example.CheckoutService.*Order` | Methods ending in `Order`, such as `placeOrder` and `cancelOrder`. |
+| `com.example.CheckoutService.{placeOrder,cancelOrder}` | Both named methods, including their overloads. |
+| `com.example.CheckoutService$Worker.run` | The `run` method of the nested `Worker` class. |
+
+To attach an exact method through the API:
+
+```sh
+curl -X PUT http://127.0.0.1:8089/v1/dynamic-instrumentation/rules/java-checkout \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "service": [{"open_ports": "8080", "languages": ["java"]}],
+    "spans": [{"name": "place-order", "on": {"function_span": "com.example.CheckoutService.placeOrder"}}]
+  }'
+```
+
+Use the symbols endpoint with the same service criteria to find the actual names
+available in your JVM before creating a rule.
+
+Byte Buddy advice runs on entry and on normal or exceptional exit. Java invocation
+IDs pair events across virtual-thread carrier changes. Arguments become `arg0`,
+`arg1`, etc., and a normal non-void result becomes `return0`. Each value is converted
+synchronously using `toString()`; primitives are boxed, null becomes `"null"`, and
+throwing conversions become `"<toString failed>"`. Capture is limited to 12
+arguments and 127 UTF-8 bytes per value. Calls made by these conversions do not
+create recursive dynamic spans. Exceptions produce `exception.message`; the
+original exception continues to the caller. Value capture can add overhead and
+expose application data, so select methods accordingly.
+
+With an active OpenTelemetry Java SDK or Java-agent span, advice installs a
+non-recording span context for the duration of the method. SDK children then
+inherit that context: `SDK server → OBI custom method → SDK client`. Exit restores
+the previous scope, including when the method throws. OBI exports the custom span
+through its existing trace pipeline; the Java SDK exports its own spans. Existing
+duplicate-protocol-span suppression continues to apply, while custom spans pass
+through. Sampling and explicit user filters still apply. Work scheduled
+asynchronously needs the application's or Java agent's normal context propagation;
+explicit SDK parents and new roots retain their SDK semantics.
+
+When no SDK context is active, OBI can supply its current server context through
+the ioctl buffer. That fallback requires `CAP_SYS_ADMIN` and a kernel permitting
+`bpf_probe_write_user`. SDK parenting itself uses Java context scopes and does not
+require this helper. If no parent can be obtained, the custom call starts a trace.
+Java method instrumentation does not require uprobe attach-cookie support.
+
+The Java agent sends entry, exit and readiness events through ioctl operations
+8, 9 and 10. A private loopback control socket carries method lists and
+retransformation requests. OBI joins the target network namespace when necessary;
+the endpoint and capability token are learned from the kernel event. This does
+not change the externally accessible, unauthenticated OBI HTTP API. A new OBI
+control session clears stale Java probe registrations before attaching new ones.
+If starting the Java agent manually, pass `dynamicInstrumentation=true` in its
+agent options. A JVM already running an older OBI agent needs the updated agent.
+
+The method catalog uses a bounded LRU with the existing `symbol_cache_entries`,
+`symbol_cache_bytes`, and `max_cached_binary_bytes` options, applied per JVM
+catalog. Oversized catalogs are read again instead of retained. One response is
+limited to 100,000 method names and 64 MiB of name data. The Java BPF registration
+map currently permits 256 method probes, sharing the invocation-counter map with
+native/Go probes. Successful deletion removes advice registrations, decoding
+metadata and metric series. Calls already executing retain their scope until exit.
+
+For Java regression tests, run `make java-test`. Set
+`OBI_TEST_OTEL_AGENT_JAR=/path/to/opentelemetry-javaagent.jar` to additionally run
+the Java-agent context test. The live BPF regression requires the normal OBI kernel
+permissions, a JDK, and the rebuilt agent:
+
+```sh
+OBI_JAVA_AGENT_JAR="$PWD/pkg/internal/java/build/obi-java-agent.jar" \
+  go test -tags jvm_live -run '^TestJavaDynamicSpansLive$' -timeout 2m \
+  ./pkg/internal/ebpf/generictracer
+```

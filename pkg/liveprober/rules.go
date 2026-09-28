@@ -222,6 +222,19 @@ func (m *Manager) RefreshMatches() {
 	if m.closed {
 		return
 	}
+	symbolsChanged := false
+	for _, target := range m.targets {
+		if resolver, ok := target.tracer.(interface{ LiveSymbolsChanged() bool }); ok {
+			symbolsChanged = resolver.LiveSymbolsChanged() || symbolsChanged
+		}
+	}
+	if symbolsChanged {
+		if err := m.reconcileLocked(); err != nil {
+			slog.Warn("reconciling dynamic instrumentation", "error", err)
+		}
+		m.notifyLocked()
+		return
+	}
 	for _, rule := range m.rules {
 		if !slices.Equal(rule.matched, m.matchingPIDsLocked(rule.definition.Service)) {
 			if err := m.reconcileLocked(); err != nil {

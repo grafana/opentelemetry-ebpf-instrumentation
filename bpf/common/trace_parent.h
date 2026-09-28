@@ -22,6 +22,7 @@
 #include <maps/fd_map.h>
 #include <maps/fd_to_connection.h>
 #include <maps/java_tasks.h>
+#include <maps/java_dynamic_spans.h>
 #include <maps/java_vt_threads.h>
 #include <maps/nginx_upstream.h>
 #include <maps/nodejs_fd_map.h>
@@ -232,6 +233,10 @@ static __always_inline tp_info_pid_t *find_parent_java_trace(trace_key_t *t_key)
     enum { k_max_depth = 3 };
 
     for (u8 i = 0; i < k_max_depth; ++i) {
+        struct java_dynamic_context *dynamic = bpf_map_lookup_elem(&java_dynamic_spans, t_key);
+        if (dynamic && bpf_map_lookup_elem(&obi_java_dynamic_probes, &dynamic->cookie)) {
+            return &dynamic->trace;
+        }
         tp_info_pid_t *server_tp = bpf_map_lookup_elem(&server_traces, t_key);
 
         if (server_tp) {

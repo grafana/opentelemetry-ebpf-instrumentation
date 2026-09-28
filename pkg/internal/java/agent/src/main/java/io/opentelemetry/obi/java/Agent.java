@@ -178,6 +178,15 @@ public class Agent {
         .transform(VirtualThreadInst.transformer())
         .installOn(inst);
 
+    if (optEnabled(opts, "dynamicInstrumentation")) {
+      try {
+        io.opentelemetry.obi.java.dynamic.DynamicControl.start(inst);
+      } catch (Throwable error) {
+        System.err.println("Failed to start Java dynamic instrumentation");
+        error.printStackTrace(System.err);
+      }
+    }
+
     if (optEnabled(opts, "runtimeMetrics")) {
       try {
         JVMRuntimeMetrics.start(
@@ -290,6 +299,20 @@ public class Agent {
     ClassInjector injector =
         ClassInjector.UsingInstrumentation.of(tempDir, BOOTSTRAP, instrumentation);
     injector.inject(typeMap);
+    // Define stateful dynamic helpers only in bootstrap. Loading an agent-loader copy
+    // first would split the probe registry for applications using that same loader.
+    Map<String, byte[]> dynamicClasses = new HashMap<>();
+    for (String name :
+        new String[] {
+          "io.opentelemetry.obi.java.dynamic.DynamicSpanRuntime",
+          "io.opentelemetry.obi.java.dynamic.DynamicSpanRuntime$1",
+          "io.opentelemetry.obi.java.dynamic.DynamicSpanRuntime$Invocation",
+          "io.opentelemetry.obi.java.dynamic.SpanContextBridge",
+          "io.opentelemetry.obi.java.ebpf.DynamicSpanPacket"
+        }) {
+      dynamicClasses.put(name, locator.locate(name).resolve());
+    }
+    injector.injectRaw(dynamicClasses);
     tempDir.delete();
 
     // After injecting into bootstrap, we need to ensure the native library is loaded

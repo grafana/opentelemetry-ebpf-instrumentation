@@ -7,11 +7,13 @@ package customspan // import "go.opentelemetry.io/obi/pkg/internal/ebpf/customsp
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"go.opentelemetry.io/obi/pkg/appolly/app/request"
 	"go.opentelemetry.io/obi/pkg/config"
+	obiebpf "go.opentelemetry.io/obi/pkg/ebpf"
 	ebpfcommon "go.opentelemetry.io/obi/pkg/ebpf/common"
 	"go.opentelemetry.io/obi/pkg/ebpf/ringbuf"
 )
@@ -113,4 +115,15 @@ func (r *Runtime) Run(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (r *Runtime) RegisterJava(span *config.CustomSpanSpec, cookie uint64, id string, generation uint64) {
+	r.Register(span, cookie, id, generation)
+	var slots []obiebpf.AutoAttrSlot
+	for i := range config.CustomSpanMaxArgs {
+		slots = append(slots, obiebpf.AutoAttrSlot{ArgIdx: uint8(i), Name: fmt.Sprintf("arg%d", i), Type: config.CustomSpanAttrString})
+	}
+	slots = append(slots, obiebpf.AutoAttrSlot{ArgIdx: 0, Name: "return0", Type: config.CustomSpanAttrString, Return: true},
+		obiebpf.AutoAttrSlot{ArgIdx: 1, Name: "exception.message", Type: config.CustomSpanAttrString, Return: true})
+	r.registry.SetAutoSlots(cookie, slots)
 }

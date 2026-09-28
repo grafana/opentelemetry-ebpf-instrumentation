@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/obi/pkg/internal/ebpf/logenricher"
 	"go.opentelemetry.io/obi/pkg/internal/ebpf/tpinjector"
 	msgh "go.opentelemetry.io/obi/pkg/internal/helpers/msg"
+	javaagent "go.opentelemetry.io/obi/pkg/internal/java"
 	"go.opentelemetry.io/obi/pkg/kube"
 	"go.opentelemetry.io/obi/pkg/liveprober"
 	"go.opentelemetry.io/obi/pkg/obi"
@@ -91,11 +92,13 @@ func (pf *ProcessFinder) Start(ctx context.Context, opts ...ProcessFinderStartOp
 	}
 
 	var dynamic *liveprober.Manager
+	var javaDynamic *javaagent.DynamicRegistry
 	if pf.cfg.DynamicInstrumentation.IsEnabled() {
 		if startConfig.dynamicPIDSelector != nil {
 			return nil, errors.New("dynamic instrumentation rules cannot be combined with an embedding application's dynamic PID selector")
 		}
 		dynamic = liveprober.New()
+		javaDynamic = javaagent.NewDynamicRegistry(ctx, pf.cfg.DynamicInstrumentation, pf.ebpfEventContext)
 		dynamic.Configure(pf.cfg.DynamicInstrumentation, ebpf.NewSymbolCache(pf.cfg.DynamicInstrumentation), pf.ctxInfo.Metrics)
 		pf.ebpfEventContext.ServiceMetadataUpdated = func(pid app.PID, service svc.Attrs) {
 			dynamic.SetService(int(pid), service)
@@ -187,6 +190,7 @@ func (pf *ProcessFinder) Start(ctx context.Context, opts ...ProcessFinderStartOp
 		RuntimeMetrics:         pf.runtimeMetrics,
 		DynamicPIDSelector:     startConfig.dynamicPIDSelector,
 		DynamicInstrumentation: dynamic,
+		JavaDynamic:            javaDynamic,
 
 		InputInstrumentables: storedExecutableTypes,
 		EbpfEventContext:     pf.ebpfEventContext,

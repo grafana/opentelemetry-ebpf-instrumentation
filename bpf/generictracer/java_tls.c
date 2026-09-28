@@ -17,6 +17,7 @@
 #include <common/trace_parent.h>
 
 #include <generictracer/jvm.h>
+#include <generictracer/java_dynamic.h>
 #include <generictracer/k_tracer_defs.h>
 #include <generictracer/maps/pid_tid_to_conn.h>
 
@@ -39,6 +40,9 @@ enum {
     k_ioctl_java_vt_unmount = 5, // virtual thread unmounted from this carrier
     k_ioctl_java_runtime_metrics = 6,
     k_ioctl_java_gc_duration = 7,
+    k_ioctl_java_dynamic_start = 8,
+    k_ioctl_java_dynamic_end = 9,
+    k_ioctl_java_dynamic_ready = 10,
 };
 
 enum { k_ioctl_invalid_op = 0xff };
@@ -105,6 +109,15 @@ int BPF_KPROBE_GUARDED(obi_kprobe_sys_ioctl) {
     // Control opcodes each handle themselves and return; the data opcodes
     // (send/recv) fall through to the connection/payload path below.
     switch (op_cmd) {
+    case k_ioctl_java_dynamic_ready:
+        java_dynamic_ready_event(uarg, id);
+        return 0;
+    case k_ioctl_java_dynamic_start:
+        java_dynamic_span_event(uarg, id, true);
+        return 0;
+    case k_ioctl_java_dynamic_end:
+        java_dynamic_span_event(uarg, id, false);
+        return 0;
     case k_ioctl_java_vt_mount: {
         // The agent reports, on every VirtualThread.mount(), the logical
         // thread id now mounted on this carrier; the current kernel thread

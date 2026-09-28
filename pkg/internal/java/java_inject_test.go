@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/obi/pkg/appolly/app"
 	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
 	"go.opentelemetry.io/obi/pkg/appolly/discover/exec"
+	"go.opentelemetry.io/obi/pkg/config"
 	"go.opentelemetry.io/obi/pkg/ebpf"
 	"go.opentelemetry.io/obi/pkg/export"
 	"go.opentelemetry.io/obi/pkg/internal/jvmtools/jvm"
@@ -815,4 +816,10 @@ func TestEnsureEmbeddedAgent_PlaceholderBytesError(t *testing.T) {
 	err := ensureEmbeddedAgent()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "embedded OBI java agent artifact is missing from this build")
+}
+
+func TestJavaDynamicInjectionOption(t *testing.T) {
+	cfg := &obi.Config{DynamicInstrumentation: config.DynamicInstrumentationConfig{Enabled: true}}
+	injector := &JavaInjector{cfg: cfg}
+	require.Equal(t, "=dynamicInstrumentation=true", injector.attachOpts(false))
 }
