@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
@@ -113,7 +115,14 @@ func blockedEcho(url string, release <-chan struct{}) {
 }
 
 func main() {
-	provider := sdktrace.NewTracerProvider()
+	options := []sdktrace.TracerProviderOption{sdktrace.WithResource(resource.NewSchemaless(
+		attribute.String("service.name", "otel-remotedice"),
+		attribute.String("service.namespace", "manual"),
+	))}
+	if os.Getenv("OBI_TEST_SDK_UNSAMPLED") == "1" {
+		options = append(options, sdktrace.WithSampler(sdktrace.NeverSample()))
+	}
+	provider := sdktrace.NewTracerProvider(options...)
 	tracer := provider.Tracer("dynamic-probe-test")
 	downstream := newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(20 * time.Millisecond)

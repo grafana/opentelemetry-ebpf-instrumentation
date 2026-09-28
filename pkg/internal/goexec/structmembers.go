@@ -245,6 +245,10 @@ const (
 	TLSConnTypeAddress
 	SDKRecordingSpanContextPos
 	SDKRecordingSpanType
+	SDKTracerProviderPos
+	SDKProviderResourcePos
+	SDKResourceAttrsPos
+	SDKAttributeSetDataPos
 )
 
 //go:embed offsets.json
@@ -607,7 +611,11 @@ var structMembers = map[string]structInfo{
 			"traceFlags": SpanContextTraceFlagsPos,
 		},
 	},
-	"go.opentelemetry.io/otel/sdk/trace.recordingSpan": {lib: "go.opentelemetry.io/otel/sdk", fields: map[string]GoOffset{"spanContext": SDKRecordingSpanContextPos}},
+	"go.opentelemetry.io/otel/sdk/trace.tracer":         {lib: "go.opentelemetry.io/otel/sdk", fields: map[string]GoOffset{"provider": SDKTracerProviderPos}},
+	"go.opentelemetry.io/otel/sdk/trace.TracerProvider": {lib: "go.opentelemetry.io/otel/sdk", fields: map[string]GoOffset{"resource": SDKProviderResourcePos}},
+	"go.opentelemetry.io/otel/sdk/resource.Resource":    {lib: "go.opentelemetry.io/otel/sdk", fields: map[string]GoOffset{"attrs": SDKResourceAttrsPos}},
+	"go.opentelemetry.io/otel/attribute.Set":            {lib: "go.opentelemetry.io/otel", fields: map[string]GoOffset{"data": SDKAttributeSetDataPos}},
+	"go.opentelemetry.io/otel/sdk/trace.recordingSpan":  {lib: "go.opentelemetry.io/otel/sdk", fields: map[string]GoOffset{"spanContext": SDKRecordingSpanContextPos}},
 	"go.opentelemetry.io/auto/sdk.span": {
 		lib: "go.opentelemetry.io/auto/sdk",
 		fields: map[string]GoOffset{

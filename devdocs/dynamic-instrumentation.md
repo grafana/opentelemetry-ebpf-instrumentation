@@ -182,6 +182,16 @@ and `recordingSpan.End` track SDK span context for scoped calls on that goroutin
 An SDK-instrumented application can therefore receive additional OBI spans even
 when its existing spans are already exported by its SDK.
 
+OBI also reads `service.name` and `service.namespace` from the standard Go SDK's
+TracerProvider resource when the application starts an SDK span. This works when
+the provider was created before OBI attached, and with stripped Go executables.
+The learned identity replaces inferred executable/Kubernetes names in OBI
+telemetry and the dynamic-probe API; explicit OBI service settings take precedence.
+The first observed SDK identity is used for the process, including applications
+with multiple providers. Until an SDK span starts, OBI uses its existing metadata.
+This metadata discovery also works without dynamic instrumentation enabled.
+Resource scanning is limited to 128 attributes and 255 bytes per service string.
+
 When a Go function launches a goroutine, OBI snapshots its active dynamic span or
 SDK/server context at creation. Dynamic calls in the child inherit that parent,
 even if the creating function returns before the child runs. Nested goroutine

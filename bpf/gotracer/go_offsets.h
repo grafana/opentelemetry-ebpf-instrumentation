@@ -168,6 +168,10 @@ typedef enum {
     _tls_conn_type_addr,
     _sdk_recording_span_context_pos,
     _sdk_recording_span_type,
+    _sdk_tracer_provider_pos,
+    _sdk_provider_resource_pos,
+    _sdk_resource_attrs_pos,
+    _sdk_attribute_set_data_pos,
     _last_go_offset,
 } go_offset_const;
 

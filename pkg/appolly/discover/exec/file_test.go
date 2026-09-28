@@ -109,3 +109,45 @@ func TestFileInfoKeepsProcessStartTime(t *testing.T) {
 		t.Fatalf("StartTime() = %d, want 42", info.StartTime())
 	}
 }
+
+func TestApplySDKService(t *testing.T) {
+	t.Run("replaces inferred identity without mutating prior snapshots", func(t *testing.T) {
+		fi := New(Init{})
+		fi.SetAutoServiceName("remotedice-binary")
+		fi.SetAutoServiceNamespace("kubernetes-namespace")
+		fi.SetMetadata(map[attr.Name]string{attr.ServiceName: "remotedice-binary"})
+		before := fi.UnsafeServiceAttrs()
+		if !fi.ApplySDKService("otel-remotedice", "manual") {
+			t.Fatal("SDK resource did not update inferred metadata")
+		}
+		after := fi.ServiceAttrs()
+		if after.UID.Name != "otel-remotedice" || after.UID.Namespace != "manual" || after.AutoName() || after.AutoNamespace() {
+			t.Fatalf("unexpected SDK identity: %+v", after)
+		}
+		if before.Metadata[attr.ServiceName] != "remotedice-binary" || after.Metadata[attr.ServiceName] != "otel-remotedice" || after.Metadata[attr.ServiceNamespace] != "manual" {
+			t.Fatal("service resource metadata was not replaced immutably")
+		}
+		if fi.ApplySDKService("another-provider", "another-namespace") {
+			t.Fatal("a second SDK provider replaced the first observed identity")
+		}
+	})
+	t.Run("preserves explicit configuration", func(t *testing.T) {
+		fi := New(Init{})
+		fi.SetExplicitServiceName("configured")
+		uid := fi.ServiceAttrs().UID
+		uid.Namespace = "configured-namespace"
+		fi.SetUID(uid)
+		if fi.ApplySDKService("otel-remotedice", "manual") {
+			t.Fatal("SDK resource replaced explicit configuration")
+		}
+	})
+	t.Run("ignores empty and SDK default identities", func(t *testing.T) {
+		fi := New(Init{})
+		fi.SetAutoServiceName("kubernetes-service")
+		for _, name := range []string{"", "unknown_service:remotedice"} {
+			if fi.ApplySDKService(name, "") {
+				t.Fatalf("unexpected change for %q", name)
+			}
+		}
+	})
+}

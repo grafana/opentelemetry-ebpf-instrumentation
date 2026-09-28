@@ -11,6 +11,7 @@ import (
 
 	"go.opentelemetry.io/obi/pkg/appolly/app"
 	"go.opentelemetry.io/obi/pkg/appolly/app/request"
+	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
 	"go.opentelemetry.io/obi/pkg/appolly/services"
 	"go.opentelemetry.io/obi/pkg/ebpf"
 	ebpfcommon "go.opentelemetry.io/obi/pkg/ebpf/common"
@@ -99,6 +100,9 @@ func (pf *ProcessFinder) Start(ctx context.Context, opts ...ProcessFinderStartOp
 		dynamic.Configure(pf.cfg.DynamicInstrumentation, ebpf.NewSymbolCache(pf.cfg.DynamicInstrumentation), func(result liveprober.ProbeResult, value float64) {
 			pf.ctxInfo.Metrics.DynamicProbe(result.ServiceName, result.ServiceNamespace, strconv.Itoa(result.PID), result.Function, value)
 		})
+		pf.ebpfEventContext.ServiceMetadataUpdated = func(pid app.PID, service svc.Attrs) {
+			dynamic.SetService(int(pid), service)
+		}
 		if err := dynamic.Run(ctx, pf.cfg.DynamicInstrumentation, pf.cfg.DynamicInstrumentationConfigPath); err != nil {
 			return nil, err
 		}

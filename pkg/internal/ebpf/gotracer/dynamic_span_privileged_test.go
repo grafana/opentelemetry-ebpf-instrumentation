@@ -71,6 +71,8 @@ func TestDynamicSpansSDKParentAndDetach(t *testing.T) {
 	tracer := ebpftracer.NewProcessTracer(ebpftracer.Go, []ebpftracer.Tracer{goTracer}, &cfg, imetrics.NoopReporter{})
 	require.NoError(t, tracer.Init(eventContext, &cfg))
 	info := goProcessFileInfo(t, pid)
+	info.SetAutoServiceName("binary-fallback")
+	info.SetAutoServiceNamespace("k8s-fallback")
 	offsets, err := goexec.InspectOffsets(info, goFunctionNames(&cfg))
 	require.NoError(t, err)
 	ebpftracer.AddSDKContextOffsets(info.ELF(), offsets)
@@ -136,6 +138,8 @@ func TestDynamicSpansSDKParentAndDetach(t *testing.T) {
 				require.Equal(t, found["server"].SpanID, outer.ParentSpanID)
 				require.Equal(t, found["server"].TraceID, outer.TraceID)
 			} else {
+				require.Equal(t, "otel-remotedice", outer.Service.UID.Name)
+				require.Equal(t, "manual", outer.Service.UID.Namespace)
 				require.Equal(t, result[0], outer.TraceID.String())
 				require.Equal(t, result[1], outer.ParentSpanID.String())
 			}

@@ -51,7 +51,7 @@ import (
 	"go.opentelemetry.io/obi/pkg/pipe/msg"
 )
 
-//go:generate $BPF2GO -cc $BPF_CLANG -cflags $BPF_CFLAGS -target amd64,arm64 Bpf ../../../../bpf/gotracer/gotracer.c -- -I../../../../bpf
+//go:generate $BPF2GO -cc $BPF_CLANG -cflags $BPF_CFLAGS -type go_sdk_resource_event -target amd64,arm64 Bpf ../../../../bpf/gotracer/gotracer.c -- -I../../../../bpf
 
 type runtimeMetricTargetKey struct {
 	pid app.PID
@@ -524,6 +524,7 @@ func (p *Tracer) RegisterOffsets(fileInfo *exec.FileInfo, offsets *goexec.Offset
 	initMissingGoOffsets(&offTable, goHTTPClientRequestOffsetFields[:])
 	initMissingGoOffsets(&offTable, goAutoSDKSpanContextOffsetFields[:])
 	initMissingGoOffsets(&offTable, []goexec.GoOffset{goexec.SDKRecordingSpanContextPos, goexec.SDKRecordingSpanType})
+	initMissingGoOffsets(&offTable, goSDKResourceOffsetFields[:])
 	initMissingGoOffsets(&offTable, goGRPCBufWriterOffsetFields[:])
 	offTable.Table[goexec.FramerPadLengthStackPos] = missingGoOffset
 	offTable.Table[goexec.FramerPadLengthStackVendoredPos] = missingGoOffset
@@ -630,6 +631,10 @@ func (p *Tracer) RegisterOffsets(fileInfo *exec.FileInfo, offsets *goexec.Offset
 		goexec.MuxTemplatePos,
 		goexec.GinFullpathPos,
 		goexec.SDKRecordingSpanContextPos,
+		goexec.SDKTracerProviderPos,
+		goexec.SDKProviderResourcePos,
+		goexec.SDKResourceAttrsPos,
+		goexec.SDKAttributeSetDataPos,
 	} {
 		if val, ok := offsets.Field[field].(uint64); ok {
 			offTable.Table[field] = val
@@ -2065,8 +2070,9 @@ func (p *Tracer) GoProbes() map[string][]*ebpfcommon.ProbeDesc {
 		}}
 	}
 
+	m["go.opentelemetry.io/otel/sdk/trace.(*tracer).Start"] = []*ebpfcommon.ProbeDesc{{Start: p.bpfObjects.ObiUprobeSdkTracerResource}}
 	if p.dynamicSpansEnabled {
-		m["go.opentelemetry.io/otel/sdk/trace.(*tracer).Start"] = []*ebpfcommon.ProbeDesc{{End: p.bpfObjects.ObiUprobeSdkTracerStartReturn}}
+		m["go.opentelemetry.io/otel/sdk/trace.(*tracer).Start"][0].End = p.bpfObjects.ObiUprobeSdkTracerStartReturn
 		m["go.opentelemetry.io/otel/sdk/trace.(*recordingSpan).End"] = []*ebpfcommon.ProbeDesc{{Start: p.bpfObjects.ObiUprobeSdkRecordingSpanEnd}}
 	}
 	// HTTP Header extraction
@@ -2517,6 +2523,9 @@ func (p *Tracer) Run(ctx context.Context, ebpfEventContext *ebpfcommon.EBPFEvent
 }
 
 func (p *Tracer) SetEventContext(eventContext *ebpfcommon.EBPFEventContext) {
+	eventContext.RegisterInternalEventHandler(ebpfcommon.EventTypeGoSDKResource, func(record *ringbuf.Record) error {
+		return p.handleSDKResource(record, eventContext.ServiceMetadataUpdated)
+	})
 	if p.dynamicSpansEnabled && p.customSpan == nil {
 		p.customSpan = customspan.New(p.dynamicSpanTTL, eventContext, p.log)
 	}

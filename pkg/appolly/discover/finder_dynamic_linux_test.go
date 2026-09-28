@@ -42,7 +42,7 @@ func TestDynamicGoInstrumentationPreservesProtocolOwnership(t *testing.T) {
 
 	generic := newGenericTracersGroup(pids, &cfg, imetrics.NoopReporter{})
 	require.Len(t, generic, 1)
-	otherPID := pid + 1
+	otherPID := app.PID(os.Getppid())
 	generic[0].AllowPID(otherPID, ns, file)
 	require.True(t, pids.ValidPID(otherPID, ns, ebpfcommon.PIDTypeKProbes))
 	require.False(t, pids.ValidPID(pid, ns, ebpfcommon.PIDTypeKProbes))

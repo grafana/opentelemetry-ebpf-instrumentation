@@ -11,13 +11,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 	"go.opentelemetry.io/obi/pkg/config"
+	"go.opentelemetry.io/obi/pkg/internal/goexec"
 	"go.opentelemetry.io/obi/pkg/internal/gometa"
 )
 
@@ -358,4 +364,39 @@ func TestMergeManualOverAuto(t *testing.T) {
 	assert.False(t, names["arg1"], "auto slot 1 dropped — manual claimed it")
 	assert.True(t, names["arg2.UserId"], "auto slot 2 name kept")
 	assert.Len(t, slots, 2, "two auto slots survive after collision")
+}
+
+func TestSDKResourceOffsetsFromRetainedTypes(t *testing.T) {
+	provider := sdktrace.NewTracerProvider()
+	for _, stripped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stripped=%t", stripped), func(t *testing.T) {
+			binary := filepath.Join(t.TempDir(), "sdk-resource")
+			args := []string{"build", "-o", binary}
+			if stripped {
+				args = append(args, "-ldflags=-s -w")
+			}
+			args = append(args, "../internal/ebpf/gotracer/testdata/dynamicspans/main.go")
+			output, err := exec.Command("go", args...).CombinedOutput()
+			require.NoError(t, err, string(output))
+			file, err := elf.Open(binary)
+			require.NoError(t, err)
+			defer file.Close()
+			offsets := &goexec.Offsets{Field: goexec.FieldOffsets{}}
+			AddSDKContextOffsets(file, offsets)
+			for _, field := range []struct {
+				typeOf reflect.Type
+				name   string
+				offset goexec.GoOffset
+			}{
+				{reflect.TypeOf(provider.Tracer("test")).Elem(), "provider", goexec.SDKTracerProviderPos},
+				{reflect.TypeOf(provider).Elem(), "resource", goexec.SDKProviderResourcePos},
+				{reflect.TypeFor[resource.Resource](), "attrs", goexec.SDKResourceAttrsPos},
+				{reflect.TypeFor[attribute.Set](), "data", goexec.SDKAttributeSetDataPos},
+			} {
+				want, ok := field.typeOf.FieldByName(field.name)
+				require.True(t, ok)
+				require.Equal(t, uint64(want.Offset), offsets.Field[field.offset], field.name)
+			}
+		})
+	}
 }

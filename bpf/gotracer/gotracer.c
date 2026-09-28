@@ -47,6 +47,7 @@ int GUARDED_PROG(obi_capture_go_executable_identity, struct pt_regs *, ctx) {
 }
 
 #include "go_custom_span.c"
+#include "go_sdk_resource.c"
 
 #include "go_runtime.c"
 #include "go_net.c"

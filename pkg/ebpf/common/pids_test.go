@@ -591,3 +591,25 @@ func TestBlockPIDPrunesExpiredEntries(t *testing.T) {
 	assert.False(t, pf.ValidPID(123, 33, PIDTypeKProbes))
 	assert.Empty(t, pf.Filter([]request.Span{{Pid: request.PidInfo{UserPID: 123, Namespace: 33}, End: preBlock}}))
 }
+
+func TestSDKServiceMetadataRespectsProcessLifetime(t *testing.T) {
+	info := exec.New(exec.Init{Pid: 123})
+	info.SetAutoServiceName("binary")
+	filter := NewPIDsFilter(&services.DiscoveryConfig{}, slog.Default(), imetrics.NoopReporter{})
+	filter.current[1] = map[app.PID]PIDInfo{123: {fileInfo: info, since: 100}}
+	_, changed := filter.UpdateServiceFromSDK(123, 1, 99, "old-process", "old")
+	require.False(t, changed)
+	_, changed = filter.UpdateServiceFromSDK(123, 2, 200, "wrong-namespace", "wrong")
+	require.False(t, changed)
+	updated, changed := filter.UpdateServiceFromSDK(123, 1, 200, "otel-remotedice", "manual")
+	require.True(t, changed)
+	require.Same(t, info, updated)
+	require.Equal(t, "otel-remotedice", info.ServiceAttrs().UID.Name)
+	updated, changed = filter.UpdateServiceFromSDK(123, 1, 201, "otel-remotedice", "manual")
+	require.False(t, changed)
+	require.Same(t, info, updated, "unchanged resources can still be acknowledged")
+	filter.current[1][123] = PIDInfo{fileInfo: info, removedAt: 202}
+	updated, changed = filter.UpdateServiceFromSDK(123, 1, 203, "exited", "exited")
+	require.False(t, changed)
+	require.Nil(t, updated)
+}

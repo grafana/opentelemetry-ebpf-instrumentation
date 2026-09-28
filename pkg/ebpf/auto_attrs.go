@@ -214,25 +214,58 @@ var goPtrMethodRE = regexp.MustCompile(`^([A-Za-z_][\w./-]*?)\.\(\*([A-Za-z_]\w*
 
 // AddSDKContextOffsets also handles stripped executables whose SDK type metadata is retained.
 func AddSDKContextOffsets(ef *elf.File, offsets *goexec.Offsets) {
-	if _, ok := offsets.Field[goexec.SDKRecordingSpanContextPos]; ok {
-		return
+	fields := []struct {
+		typeName string
+		path     []string
+		offset   goexec.GoOffset
+	}{
+		{"*trace.recordingSpan", []string{"spanContext"}, goexec.SDKRecordingSpanContextPos},
+		{"*trace.tracer", []string{"provider"}, goexec.SDKTracerProviderPos},
+		{"*trace.TracerProvider", []string{"resource"}, goexec.SDKProviderResourcePos},
+		{"*resource.Resource", []string{"attrs"}, goexec.SDKResourceAttrsPos},
+		{"*attribute.Set", []string{"data"}, goexec.SDKAttributeSetDataPos},
+		{"*attribute.Set", []string{"equivalent", "iface"}, goexec.SDKAttributeSetDataPos},
 	}
-	walker, err := gometa.Open(ef)
-	if err != nil {
-		return
-	}
-	t := walker.TypeByName("*trace.recordingSpan")
-	if t == nil {
-		return
-	}
-	t = t.Elem()
-	if t == nil {
-		return
-	}
-	for _, field := range t.Fields() {
-		if field.Name == "spanContext" {
-			offsets.Field[goexec.SDKRecordingSpanContextPos] = field.Offset
-			return
+	var walker *gometa.Walker
+	for _, field := range fields {
+		if _, ok := offsets.Field[field.offset]; ok {
+			continue
+		}
+		if walker == nil {
+			var err error
+			walker, err = gometa.Open(ef)
+			if err != nil {
+				return
+			}
+		}
+		t := walker.TypeByName(field.typeName)
+		if t == nil {
+			continue
+		}
+		if offset, ok := sdkRuntimeFieldOffset(t.Elem(), field.path); ok {
+			offsets.Field[field.offset] = offset
 		}
 	}
+}
+
+func sdkRuntimeFieldOffset(t *gometa.Type, path []string) (uint64, bool) {
+	var offset uint64
+	for _, name := range path {
+		if t == nil {
+			return 0, false
+		}
+		found := false
+		for _, field := range t.Fields() {
+			if field.Name == name {
+				offset += field.Offset
+				t = field.Type
+				found = true
+				break
+			}
+		}
+		if !found {
+			return 0, false
+		}
+	}
+	return offset, true
 }

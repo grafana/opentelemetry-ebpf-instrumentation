@@ -124,8 +124,10 @@ func TestDynamicAPIConfigReload(t *testing.T) {
 	require.Equal(t, http.StatusOK, status, string(data))
 	var response struct {
 		Probes []struct {
-			Function string `json:"function"`
-			Status   string `json:"status"`
+			Function         string `json:"function"`
+			Status           string `json:"status"`
+			ServiceName      string `json:"service_name"`
+			ServiceNamespace string `json:"service_namespace"`
 		} `json:"probes"`
 	}
 	require.NoError(t, json.Unmarshal(data, &response))
@@ -136,6 +138,18 @@ func TestDynamicAPIConfigReload(t *testing.T) {
 	_, err = io.WriteString(input, "CALL\n")
 	require.NoError(t, err)
 	waitForClientLine(t, lines, "RESULT=", 10*time.Second)
+	require.EventuallyWithT(t, func(t *assert.CollectT) {
+		status, data, err := call(http.MethodGet, "/v1/dynamic-instrumentation/probes", "")
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+		if !assert.NoError(t, json.Unmarshal(data, &response)) || !assert.Len(t, response.Probes, 2) {
+			return
+		}
+		for _, probe := range response.Probes {
+			assert.Equal(t, "otel-remotedice", probe.ServiceName)
+			assert.Equal(t, "manual", probe.ServiceNamespace)
+		}
+	}, 10*time.Second, 100*time.Millisecond)
 	waitForFunctions := func(want ...string) {
 		t.Helper()
 		require.Eventually(t, func() bool {

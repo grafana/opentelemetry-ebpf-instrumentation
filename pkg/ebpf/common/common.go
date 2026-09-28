@@ -28,7 +28,9 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
+	"go.opentelemetry.io/obi/pkg/appolly/app"
 	"go.opentelemetry.io/obi/pkg/appolly/app/request"
+	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
 	"go.opentelemetry.io/obi/pkg/config"
 	"go.opentelemetry.io/obi/pkg/ebpf/common/dnsparser"
 	ebpfhttp "go.opentelemetry.io/obi/pkg/ebpf/common/http"
@@ -103,6 +105,7 @@ const (
 	EventTypeJVMRuntimeMetrics     = uint8(BpfEventTypeK_eventTypeJvmRuntimeMetrics)      // JVM runtime metrics
 	EventTypeNodejsResource        = uint8(BpfEventTypeK_eventTypeNodejsResource)
 	EventTypeCustomSpan            = uint8(BpfEventTypeK_eventTypeCustomSpan)
+	EventTypeGoSDKResource         = uint8(BpfEventTypeK_eventTypeGoSdkResource)
 	EventTypeGoDynamicGoroutine    = uint8(BpfEventTypeK_eventTypeGoDynamicGoroutine)
 	EventTypeJVMGCDuration         = uint8(BpfEventTypeK_eventTypeJvmGcDuration) // JVM garbage-collection duration
 )
@@ -393,14 +396,15 @@ type sharedForwarder interface {
 }
 
 type EBPFEventContext struct {
-	CommonPIDsFilter ServiceFilter
-	SharedRingBuffer sharedForwarder
-	RuntimeMetrics   RuntimeMetricSender
-	EBPFMaps         map[string]*ebpf.Map
-	RingBufLock      sync.Mutex
-	MapsLock         sync.Mutex
-	LoadLock         sync.Mutex
-	Capabilities     TracerCapability
+	ServiceMetadataUpdated func(app.PID, svc.Attrs)
+	CommonPIDsFilter       ServiceFilter
+	SharedRingBuffer       sharedForwarder
+	RuntimeMetrics         RuntimeMetricSender
+	EBPFMaps               map[string]*ebpf.Map
+	RingBufLock            sync.Mutex
+	MapsLock               sync.Mutex
+	LoadLock               sync.Mutex
+	Capabilities           TracerCapability
 
 	internalEventHandlersMu sync.RWMutex
 	internalEventHandlers   map[uint8]func(*ringbuf.Record) error

@@ -41,4 +41,5 @@ enum event_type : u8 {
     k_event_type_jvm_gc_duration = 32,
     k_event_type_custom_span = 33,
     k_event_type_go_dynamic_goroutine = 34,
+    k_event_type_go_sdk_resource = 35,
 };
