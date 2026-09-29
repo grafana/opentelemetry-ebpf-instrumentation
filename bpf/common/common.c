@@ -34,3 +34,5 @@ const go_auto_span_t *unused_14 __attribute__((unused));
 const node_span_event_t *unused_15 __attribute__((unused));
 const enum protocol_type *unused_16 __attribute__((unused));
 const enum event_type *unused_17 __attribute__((unused));
+
+const node_dynamic_span_event_t *unused_18 __attribute__((unused));

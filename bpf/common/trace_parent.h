@@ -26,6 +26,7 @@
 #include <maps/java_vt_threads.h>
 #include <maps/nginx_upstream.h>
 #include <maps/nodejs_fd_map.h>
+#include <maps/node_dynamic_spans.h>
 #include <maps/puma_tasks.h>
 #include <maps/python_thread_state.h>
 #include <maps/server_traces.h>
@@ -98,6 +99,10 @@ static __always_inline tp_info_pid_t *find_puma_parent_trace(u64 id) {
 
 static __always_inline tp_info_pid_t *
 find_nodejs_parent_trace(const pid_connection_info_t *p_conn, u16 orig_dport, u64 pid_tgid) {
+    tp_info_pid_t *dynamic = node_dynamic_parent(pid_tgid);
+    if (dynamic) {
+        return dynamic;
+    }
     connection_info_part_t client_part = {};
     populate_ephemeral_info(&client_part, &p_conn->conn, orig_dport, p_conn->pid, FD_CLIENT);
     fd_info_t *fd_info = fd_info_for_conn(&client_part);

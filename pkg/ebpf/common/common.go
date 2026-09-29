@@ -41,7 +41,7 @@ import (
 	"go.opentelemetry.io/obi/pkg/pipe/msg"
 )
 
-//go:generate $BPF2GO -cc $BPF_CLANG -cflags $BPF_CFLAGS -target amd64,arm64 -type protocol_type -type event_type -type http_request_trace_t -type sql_request_trace_t -type http_info_t -type connection_info_t -type http2_grpc_request_t -type tcp_req_t -type kafka_client_req_t -type kafka_go_req_t -type redis_client_req_t -type tcp_large_buffer_t -type otel_span_t -type channel_link_trace_t -type go_auto_span_t -type mongo_go_client_req_t -type dns_req_t -type node_span_event_t Bpf ../../../bpf/common/common.c -- -I../../../bpf
+//go:generate $BPF2GO -cc $BPF_CLANG -cflags $BPF_CFLAGS -target amd64,arm64 -type protocol_type -type event_type -type http_request_trace_t -type sql_request_trace_t -type http_info_t -type connection_info_t -type http2_grpc_request_t -type tcp_req_t -type kafka_client_req_t -type kafka_go_req_t -type redis_client_req_t -type tcp_large_buffer_t -type otel_span_t -type channel_link_trace_t -type go_auto_span_t -type mongo_go_client_req_t -type dns_req_t -type node_span_event_t -type node_dynamic_span_event_t Bpf ../../../bpf/common/common.c -- -I../../../bpf
 
 // HTTPRequestTrace contains information from an HTTP request as directly received from the
 // eBPF layer. This contains low-level C structures for accurate binary read from ring buffer.
@@ -104,6 +104,7 @@ const (
 	EventTypePythonRuntimeMetric   = uint8(BpfEventTypeK_eventTypePythonRuntimeMetrics)   // Python GC counters
 	EventTypeJVMRuntimeMetrics     = uint8(BpfEventTypeK_eventTypeJvmRuntimeMetrics)      // JVM runtime metrics
 	EventTypeNodejsResource        = uint8(BpfEventTypeK_eventTypeNodejsResource)
+	EventTypeNodeDynamicSpan       = uint8(BpfEventTypeK_eventTypeNodeDynamicSpan)
 	EventTypeCustomSpan            = uint8(BpfEventTypeK_eventTypeCustomSpan)
 	EventTypeGoSDKResource         = uint8(BpfEventTypeK_eventTypeGoSdkResource)
 	EventTypeGoDynamicGoroutine    = uint8(BpfEventTypeK_eventTypeGoDynamicGoroutine)
@@ -426,7 +427,7 @@ type CustomSpanRecordHandler func(record *ringbuf.Record) (request.Span, bool, b
 // DispatchCustomSpan routes dynamic instrumentation records to ctx.CustomSpanHandler.
 // It returns (span, skip, ok, err); ok means the caller should stop further parsing.
 func DispatchCustomSpan(ctx *EBPFEventContext, record *ringbuf.Record) (span request.Span, skip, ok bool, err error) {
-	if ctx == nil || record == nil || len(record.RawSample) == 0 || (record.RawSample[0] != EventTypeCustomSpan && record.RawSample[0] != EventTypeGoDynamicGoroutine) {
+	if ctx == nil || record == nil || len(record.RawSample) == 0 || (record.RawSample[0] != EventTypeCustomSpan && record.RawSample[0] != EventTypeGoDynamicGoroutine && record.RawSample[0] != EventTypeNodeDynamicSpan) {
 		return request.Span{}, false, false, nil
 	}
 	ctx.dynamicSpanMu.RLock()
@@ -765,7 +766,7 @@ func ReadBPFTraceAsSpan(parseCtx *EBPFParseContext, cfg *config.EBPFTracer, reco
 		return finalizeParsedSpan(parseCtx, span, ignore, err)
 	case EventTypeGoChannelLink:
 		return readGoChannelLinkEvent(parseCtx, record)
-	case EventTypeCustomSpan, EventTypeGoDynamicGoroutine:
+	case EventTypeCustomSpan, EventTypeGoDynamicGoroutine, EventTypeNodeDynamicSpan:
 		// Dynamic instrumentation events are dispatched out-of-band via the shared
 		// EBPFEventContext.CustomSpanHandler; the caller (tracer-specific
 		// parse) must have already routed this record. Ignore here so we

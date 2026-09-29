@@ -17,6 +17,8 @@
 #include <common/tracing.h>
 
 #include <generictracer/types/nodejs.h>
+#include <generictracer/nodejs_helpers.h>
+#include <generictracer/node_dynamic.h>
 
 #include <logger/bpf_dbg.h>
 
@@ -28,6 +30,7 @@
 #include <shared/obi_ctx.h>
 
 volatile const u64 nodejs_runtime_metrics_enabled = 0;
+volatile const u64 nodejs_dynamic_instrumentation_enabled = 0;
 
 struct nodejs_eventloop_event _nodejs_eventloop_event = {};
 
@@ -75,24 +78,6 @@ _Static_assert(k_nodejs_heap_space_name_max == k_nodejs_resource_type_max,
 
 SCRATCH_MEM_SIZED(nodejs_rt_payload, k_rt_payload_read_len)
 SCRATCH_MEM_SIZED(nodejs_v8_payload, k_v8_heap_payload_read_len)
-
-static __always_inline int nodejs_parse_hex_u64(const unsigned char *buf, u64 *out) {
-    u64 v = 0;
-    for (u8 i = 0; i < k_rt_field_hex_len; ++i) {
-        const unsigned char c = buf[i];
-        u8 digit;
-        if (c >= '0' && c <= '9') {
-            digit = c - '0';
-        } else if (c >= 'a' && c <= 'f') {
-            digit = c - 'a' + 10;
-        } else {
-            return -1;
-        }
-        v = (v << 4) | digit;
-    }
-    *out = v;
-    return 0;
-}
 
 // The v8 record parsers are pure over (payload, len) — len is what
 // bpf_probe_read_user_str returned, including the terminating NUL — and are
@@ -144,6 +129,9 @@ static __always_inline int handle_async_switch(char *buf, const u64 pid_tgid) {
     bpf_dbg_printk("nodejs_async_switch: %s, pid_tgid = %llx, fd = %u", buf, pid_tgid, fd);
 
     const fd_key fkey = {.pid_tgid = pid_tgid, .fd = (s32)fd};
+    if (nodejs_dynamic_instrumentation_enabled) {
+        bpf_map_delete_elem(&node_dynamic_requests, &pid_tgid);
+    }
     const connection_info_t *conn = bpf_map_lookup_elem(&fd_to_connection, &fkey);
     if (!conn) {
         obi_ctx__del(pid_tgid);
@@ -152,6 +140,9 @@ static __always_inline int handle_async_switch(char *buf, const u64 pid_tgid) {
 
     const tp_info_pid_t *tp = trace_info_for_connection(conn, TRACE_TYPE_SERVER);
     if (tp && tp->valid) {
+        if (nodejs_dynamic_instrumentation_enabled) {
+            bpf_map_update_elem(&node_dynamic_requests, &pid_tgid, &tp->tp, BPF_ANY);
+        }
         obi_ctx__set(pid_tgid, &tp->tp);
     } else {
         obi_ctx__del(pid_tgid);
@@ -216,6 +207,9 @@ static __always_inline int handle_node_span(const char *path, const u64 pid_tgid
 // (handle_node_span) is not mis-parented into the previous request's trace.
 static __always_inline int handle_ctx_clear(const u64 pid_tgid) {
     bpf_dbg_printk("nodejs_ctx_clear: pid_tgid = %llx", pid_tgid);
+    if (nodejs_dynamic_instrumentation_enabled) {
+        bpf_map_delete_elem(&node_dynamic_requests, &pid_tgid);
+    }
     obi_ctx__del(pid_tgid);
     return 0;
 }
@@ -522,6 +516,12 @@ int BPF_KPROBE_GUARDED(obi_uv_fs_access, void *loop, void *req, const char *path
     }
 
     if (buf[k_delim_offset] == '-') {
+        if (buf[k_variant_offset] == 'd') {
+            if (nodejs_dynamic_instrumentation_enabled) {
+                return handle_node_dynamic(path, pid_tgid, buf[k_node_dynamic_op_offset]);
+            }
+            return 0;
+        }
         // Manual span: /dev/null/obi-span/<json>
         if (buf[k_variant_offset] == 's') {
             return handle_node_span(path, pid_tgid);

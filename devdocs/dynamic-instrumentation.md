@@ -2,8 +2,9 @@
 
 Dynamic instrumentation adds internal spans to running processes without restarting
 OBI. OBI discovers processes and instruments native/Go functions with uprobes.
-For Java, its injectable Byte Buddy agent instruments methods with enter/exit advice. Configure it separately
-from application discovery and log enrichment:
+For Java, its injectable Byte Buddy agent instruments methods with enter/exit advice.
+For Node.js, its injected agent wraps exported CommonJS functions and methods.
+Configure it separately from application discovery and log enrichment:
 
 ```yaml
 dynamic_instrumentation:
@@ -68,7 +69,8 @@ later, until removed or OBI exits. API rules are held in memory.
 The response contains `id` and a `probes` list with the host PID, resolved function,
 span name, OpenTelemetry service name and namespace, status, and any error.
 `attached` means the kernel accepted a uprobe attachment or the Java agent
-successfully retransformed the selected methods; it does not guarantee that
+successfully retransformed the selected methods, or the Node agent wrapped the
+selected exports; it does not guarantee that
 the function has executed or that an exporter delivered its spans.
 
 | HTTP status | Meaning |
@@ -87,7 +89,7 @@ curl --get http://127.0.0.1:8089/v1/dynamic-instrumentation/probes \
 ```
 
 List the available function symbols in each matching process's main executable,
-or its loaded Java methods, using the same `service` selectors:
+loaded Java methods, or supported Node.js exports, using the same `service` selectors:
 
 ```sh
 curl --get http://127.0.0.1:8089/v1/dynamic-instrumentation/symbols \
@@ -403,5 +405,113 @@ permissions, a JDK, and the rebuilt agent:
 ```sh
 OBI_JAVA_AGENT_JAR="$PWD/pkg/internal/java/build/obi-java-agent.jar" \
   go test -tags jvm_live -run '^TestJavaDynamicSpansLive$' -timeout 2m \
+  ./pkg/internal/ebpf/generictracer
+```
+
+## Node.js functions and values
+
+Enable `nodejs.enabled` and `dynamic_instrumentation` at OBI startup. Node.js 14
+or newer is required. OBI injects its Node agent through the existing inspector
+injection path. The same service selectors, glob matching, symbols API, probe
+listing, deletion, configuration reload, and invocation metrics apply to Node:
+
+```yaml
+nodejs:
+  enabled: true
+dynamic_instrumentation:
+  enabled: true
+  listen_address: 0.0.0.0:8089
+  rules:
+    - service:
+        - open_ports: "3000"
+      spans:
+        - name: checkout.place_order
+          on:
+            function_span: "*/checkout.cjs:exports.placeOrder"
+        - name: checkout.worker
+          on:
+            function_span: "*/checkout.cjs:exports.Worker.prototype.*"
+```
+
+The symbol name is the loaded CommonJS module's absolute filename, `:exports`,
+and its exported property path. These matchers apply to an application that
+exports `placeOrder` and a `Worker` class:
+
+| Pattern | Matches |
+| --- | --- |
+| `/app/checkout.cjs:exports.placeOrder` | One exported function. |
+| `*/checkout.cjs:exports.*Order` | Exported functions ending in `Order`. |
+| `*/checkout.cjs:exports.{placeOrder,cancelOrder}` | Either named export. |
+| `*/checkout.cjs:exports.Worker.prototype.run` | An exported class's instance method. |
+| `*/handler.cjs:exports` | A function assigned directly to `module.exports`. |
+
+Use `/v1/dynamic-instrumentation/symbols` to discover the exact available names.
+Patterns expand in OBI against the agent's catalog. New modules appear on the
+next catalog refresh, and matching rules reconcile without restarting Node or
+OBI. Node targets support `function_span`.
+
+The agent wraps writable or configurable exported functions and methods,
+including modules loaded before injection. Calls must go through the wrapped
+export or method. Local functions, native ESM exports, generators, constructors,
+accessors, application-created proxies, and references copied before attachment
+are not instrumented. Frozen export properties are omitted from the catalog.
+A local `function work() { ... }` must be exported and called through that export
+to be a target. The agent does not rewrite loaded JavaScript source. Worker-thread
+isolates are not covered by the main-thread agent.
+
+Synchronous calls retain their result, receiver and thrown error. Native promises
+remain asynchronous, and their spans end when they resolve or reject. The wrapper
+returns a chained promise; promise object identity changes. Callback-style
+functions that return immediately have spans covering the synchronous call only.
+Thenables other than native promises are treated as synchronous return values.
+
+Arguments `arg0` through `arg11`, `return0`, and `exception.message` are recorded
+as strings using JavaScript conversion, with 127-byte UTF-8 limits. Failed
+conversions are omitted. Attribute payloads have a combined 1900-byte limit;
+trailing arguments are removed when necessary. Conversion can execute an
+application's `toString` method. Explicit string `attrs` can rename argument
+slots using the existing dynamic probe schema.
+
+AsyncLocalStorage isolates concurrent calls and maintains nested dynamic scopes
+across promises and callbacks. Without an SDK, BPF captures the OBI request
+context at entry and parents automatic clients under the active dynamic call:
+`OBI server → dynamic outer → dynamic inner → OBI client`. The server's own
+tracking state is preserved.
+
+With an active span from the OpenTelemetry Node.js SDK, the wrapper makes a
+non-recording span with the dynamic span's context current while the function
+runs. SDK-created spans then form `SDK server → dynamic span → SDK client`.
+This also works when the SDK registers after OBI injection. The SDK must have
+working context propagation and create its client spans. Explicit alternative
+parents and root contexts remain under application control. OBI exports the
+dynamic span; the SDK exports its own children. Dynamic spans bypass avoided
+service suppression, while OBI's duplicate protocol spans retain the existing
+suppression behavior. No SDK provider is replaced, and `nodejs.manual_spans` is
+not required for dynamic probes.
+
+The injected agent opens a private loopback control socket. It announces its
+port, random token, and catalog revision through the existing `uv_fs_access`
+side channel. OBI connects in the target network namespace to send concrete
+function names and attachment cookies. Attachment errors are returned through
+the API; `attached` means the export or method was successfully wrapped. The
+inspector is not reopened for subsequent probe changes. A new OBI control session
+removes stale registrations left by the previous OBI instance.
+
+Node span entry, completion and async-context switches also use `uv_fs_access`;
+there is no native addon dependency or `bpf_probe_write_user` requirement. Dynamic
+Node probes do not require attach-cookie support. BPF keeps up to 256 registered
+Node probes and 4096 in-flight invocations. An invocation evicted under load may
+lose its span or parent context; invocation counters still count entry events.
+The catalog scans at most 20,000 objects to five property levels, with at most
+100,000 names and 64 MiB of symbol-name data. OBI caches catalogs using the
+configured symbol-cache limits and invalidates them when the catalog changes.
+
+Run `make test-nodejs` for agent and SDK regressions. The privileged BPF test
+starts an isolated Node HTTP application and verifies parentage, values,
+invocation counters, and removal:
+
+```sh
+OBI_NODE_AGENT_DIR="$PWD/pkg/internal/nodejs" \
+  go test -tags node_live -run '^TestNodeDynamicSpansLive$' -timeout 2m \
   ./pkg/internal/ebpf/generictracer
 ```

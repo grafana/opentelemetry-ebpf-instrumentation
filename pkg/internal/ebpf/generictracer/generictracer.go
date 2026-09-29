@@ -314,6 +314,10 @@ func (p *Tracer) constants() map[string]any {
 	if p.cfg.AppRuntimeMetricsEnabled() {
 		m["jvm_sampling_interval_ns"] = uint64(p.cfg.JVMRuntimeMetrics.SamplingInterval.Nanoseconds())
 	}
+	m["nodejs_dynamic_instrumentation_enabled"] = uint64(0)
+	if p.cfg.DynamicInstrumentation.IsEnabled() && p.cfg.NodeJS.Enabled {
+		m["nodejs_dynamic_instrumentation_enabled"] = uint64(1)
+	}
 	m["nodejs_runtime_metrics_enabled"] = uint64(0)
 	if p.cfg.AppRuntimeMetricsEnabled() {
 		m["nodejs_runtime_metrics_enabled"] = uint64(1)

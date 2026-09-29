@@ -73,6 +73,9 @@ func (r *Runtime) HandleRecord(record *ringbuf.Record) (request.Span, bool, bool
 	if r == nil || record == nil || len(record.RawSample) == 0 {
 		return request.Span{}, false, false, nil
 	}
+	if record.RawSample[0] == ebpfcommon.EventTypeNodeDynamicSpan {
+		return r.readNodeSpan(record)
+	}
 	if record.RawSample[0] == ebpfcommon.EventTypeGoDynamicGoroutine {
 		event, err := decodeCustomSpanGoroutineEvent(record.RawSample)
 		if err == nil {
@@ -118,6 +121,10 @@ func (r *Runtime) Run(ctx context.Context) {
 }
 
 func (r *Runtime) RegisterJava(span *config.CustomSpanSpec, cookie uint64, id string, generation uint64) {
+	r.RegisterStringArgs(span, cookie, id, generation)
+}
+
+func (r *Runtime) RegisterStringArgs(span *config.CustomSpanSpec, cookie uint64, id string, generation uint64) {
 	r.Register(span, cookie, id, generation)
 	var slots []obiebpf.AutoAttrSlot
 	for i := range config.CustomSpanMaxArgs {

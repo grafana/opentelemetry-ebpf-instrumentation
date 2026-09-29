@@ -281,6 +281,13 @@ typedef struct node_span_event {
     u8 _epad[4];
 } node_span_event_t;
 
+typedef struct node_dynamic_span_event {
+    node_span_event_t span;
+    u64 cookie;
+    u8 trace_flags;
+    u8 reserved[7];
+} node_dynamic_span_event_t;
+
 typedef struct channel_link_trace {
     u8 type; // Must be first
     u8 _pad[7];

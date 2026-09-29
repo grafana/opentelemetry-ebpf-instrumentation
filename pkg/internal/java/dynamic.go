@@ -4,17 +4,13 @@
 package javaagent // import "go.opentelemetry.io/obi/pkg/internal/java"
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
-	"slices"
-	"strconv"
 	"sync"
 	"time"
 
@@ -25,7 +21,7 @@ import (
 	"go.opentelemetry.io/obi/pkg/ebpf"
 	ebpfcommon "go.opentelemetry.io/obi/pkg/ebpf/common"
 	"go.opentelemetry.io/obi/pkg/ebpf/ringbuf"
-	"go.opentelemetry.io/obi/pkg/internal/netns"
+	"go.opentelemetry.io/obi/pkg/internal/agentctl"
 	"go.opentelemetry.io/obi/pkg/internal/procs"
 )
 
@@ -255,86 +251,9 @@ func (t *DynamicTarget) command(parent context.Context, operation byte, method s
 }
 
 func (t *DynamicTarget) exchange(ctx context.Context, endpoint javaEndpoint, operation byte, method string, cookie uint64) ([]string, error) {
-	if endpoint.port == 0 {
-		return nil, errors.New("java dynamic agent is not ready")
-	}
-	var connection net.Conn
-	err := netns.WithNetNS(int(t.pid), func() error {
-		var err error
-		connection, err = (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(endpoint.port))))
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer connection.Close()
-	deadline, _ := ctx.Deadline()
-	if err = connection.SetDeadline(deadline); err != nil {
-		return nil, err
-	}
-	stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
-	defer stop()
-	var request bytes.Buffer
-	request.Write(endpoint.token[:])
-	request.Write(t.session[:])
-	request.WriteByte(operation)
-	if operation == javaAttachMethod {
-		_ = binary.Write(&request, binary.BigEndian, uint32(len(method)))
-		request.WriteString(method)
-	}
-	if operation == javaAttachMethod || operation == javaDetachMethod {
-		_ = binary.Write(&request, binary.BigEndian, cookie)
-	}
-	if _, err = io.Copy(connection, &request); err != nil {
-		return nil, err
-	}
-	var status [1]byte
-	if _, err = io.ReadFull(connection, status[:]); err != nil {
-		return nil, err
-	}
-	if status[0] != 0 {
-		message, err := readJavaString(connection)
-		if err != nil {
-			return nil, err
-		}
-		return nil, errors.New(message)
-	}
-	if operation != javaListMethods {
-		return nil, nil
-	}
-	var count uint32
-	if err = binary.Read(connection, binary.BigEndian, &count); err != nil {
-		return nil, err
-	}
-	if count > maxJavaSymbols {
-		return nil, fmt.Errorf("java symbol list exceeds %d methods", maxJavaSymbols)
-	}
-	symbols := make([]string, 0, count)
-	size := 0
-	for range count {
-		symbol, err := readJavaString(connection)
-		if err != nil {
-			return nil, err
-		}
-		size += len(symbol)
-		if size > maxJavaSymbolBytes {
-			return nil, errors.New("java symbol catalog exceeds byte limit")
-		}
-		symbols = append(symbols, symbol)
-	}
-	slices.Sort(symbols)
-	return symbols, nil
+	return agentctl.Exchange(ctx, t.pid, endpoint.port, endpoint.token, t.session, operation, method, cookie)
 }
 
 func readJavaString(reader io.Reader) (string, error) {
-	var size uint32
-	if err := binary.Read(reader, binary.BigEndian, &size); err != nil {
-		return "", err
-	}
-	if size > 65536 {
-		return "", errors.New("java control string exceeds limit")
-	}
-	text := make([]byte, size)
-	_, err := io.ReadFull(reader, text)
-	return string(text), err
+	return agentctl.ReadString(reader)
 }
