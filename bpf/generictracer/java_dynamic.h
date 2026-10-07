@@ -51,7 +51,7 @@ struct java_dynamic_ready {
 SCRATCH_MEM_TYPED(java_dynamic_packet, struct java_dynamic_packet);
 
 static __always_inline void java_dynamic_task_op(const u8 op, const unsigned char *user, u64 id) {
-    u32 task_id = 0;
+    u64 task_id = 0;
     if (bpf_probe_read_user(&task_id, sizeof(task_id), user + 1) != 0) {
         return;
     }

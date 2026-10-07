@@ -264,6 +264,9 @@ public class Agent {
     Class.forName(ProxyInputStream.class.getName());
     Class.forName(ConnectionInfo.class.getName());
     Class.forName(ThreadInfo.class.getName());
+    Class.forName("io.opentelemetry.obi.java.ebpf.TaskIdentityRegistry");
+    Class.forName("io.opentelemetry.obi.java.ebpf.TaskIdentityRegistry$IdentityReference");
+    Class.forName("io.opentelemetry.obi.java.ebpf.ThreadInfo$DynamicTaskCallable");
     Class.forName(IOCTLPacket.class.getName());
     Class.forName(OperationType.class.getName());
     Class.forName(Agent.class.getName());

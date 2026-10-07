@@ -233,7 +233,7 @@ public class JavaExecutorInst {
   public static class SetCallableStateAdvice {
     @Advice.OnMethodEnter(suppress = Throwable.class)
     public static void enterJobSubmit(
-        @Advice.Argument(0) Callable<?> task,
+        @Advice.Argument(value = 0, readOnly = false) Callable<?> task,
         @Advice.Origin String method,
         @Advice.Origin("#m") String methodName) {
       // see SetExecuteRunnableStateAdvice, same reasoning
@@ -241,7 +241,7 @@ public class JavaExecutorInst {
         return;
       }
       if ("schedule".equals(methodName)) {
-        ThreadInfo.captureDynamicTaskContext(task);
+        task = ThreadInfo.wrapScheduledCallable(task);
       }
       long threadId = Agent.NativeLib.gettid();
       Long parentId = SSLStorage.parentThreadId(task);

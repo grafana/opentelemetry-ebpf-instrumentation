@@ -489,7 +489,7 @@ public class DynamicTarget {
  private static Future<Integer> pending;
  private static ScheduledFuture<Integer> pendingScheduled;
  private static ScheduledFuture<?> pendingScheduledRunnable;
- private static ScheduledFuture<?> pendingCancelledRunnable;
+ private static ScheduledFuture<Integer> pendingCancelledCallable;
  private static volatile int scheduledRunnableResult;
  private static volatile int scheduledExceptionRecoveryResult;
  private static RejectedTask rejectedTask;
@@ -529,9 +529,7 @@ public class DynamicTarget {
  }
  public static int outerScheduledException(int x) throws Exception {
   try {
-   scheduler.schedule(new Runnable() {
-    @Override public void run() { throw new IllegalStateException("expected scheduled-task failure"); }
-   }, 0, TimeUnit.MILLISECONDS).get();
+   scheduler.schedule((Callable<Integer>) () -> { throw new IllegalStateException("expected scheduled-task failure"); }, 0, TimeUnit.MILLISECONDS).get();
    throw new AssertionError("scheduled task should fail");
   } catch (ExecutionException expected) {
    if (!(expected.getCause() instanceof IllegalStateException)) throw expected;
@@ -549,9 +547,7 @@ public class DynamicTarget {
   return x + 1;
  }
  public static int outerCancelledTask(int x) {
-  pendingCancelledRunnable = scheduler.schedule(new Runnable() {
-   @Override public void run() { throw new AssertionError("cancelled task must not run"); }
-  }, 1, TimeUnit.HOURS);
+  pendingCancelledCallable = scheduler.schedule(() -> { throw new AssertionError("cancelled task must not run"); }, 1, TimeUnit.HOURS);
   return x;
  }
  public static int innerCancelledTask(int x) throws Exception { request(); return x + 1; }
@@ -632,7 +628,7 @@ public class DynamicTarget {
    else if (line.equals("RELEASE_SCHEDULED_RUNNABLE")) { scheduledRunnableRelease.countDown(); pendingScheduledRunnable.get(); System.out.println(scheduledRunnableResult); }
    else if (line.equals("CALL_SCHEDULED_EXCEPTION")) System.out.println(outerScheduledException(42));
    else if (line.equals("CALL_SCHEDULED_CANCELLED")) System.out.println(outerCancelledTask(42));
-   else if (line.equals("CANCEL_SCHEDULED")) { if (!pendingCancelledRunnable.cancel(false)) throw new AssertionError("scheduled task cancellation failed"); System.out.println(42); }
+   else if (line.equals("CANCEL_SCHEDULED")) { if (!pendingCancelledCallable.cancel(false)) throw new AssertionError("scheduled task cancellation failed"); System.out.println(42); }
    else if (line.equals("RUN_CANCELLED_TASK")) System.out.println(scheduler.schedule(() -> innerCancelledTask(42), 0, TimeUnit.MILLISECONDS).get());
    else if (line.equals("CALL_REJECTED_TASK")) System.out.println(outerRejectedTask(42));
    else if (line.equals("RUN_REJECTED_TASK")) { Thread worker = new Thread(rejectedTask); worker.start(); worker.join(); System.out.println(42); }

@@ -36,9 +36,10 @@ struct {
 // the worker's prior span when the task exits.
 struct java_dynamic_task_key {
     u32 pid;
-    // Scratch prototype uses System.identityHashCode(task); collisions and
-    // reuse can misassociate contexts. Replace with a stable task identity.
-    u32 task_id;
+    u32 _pad;
+    // Monotonic, process-local Java identity; unlike identityHashCode this does
+    // not collide or get reused while the JVM is running.
+    u64 task_id;
 };
 
 struct {

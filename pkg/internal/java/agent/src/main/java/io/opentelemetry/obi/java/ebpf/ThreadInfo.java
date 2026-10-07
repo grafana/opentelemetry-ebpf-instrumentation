@@ -10,6 +10,7 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 import java.util.WeakHashMap;
+import java.util.concurrent.Callable;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 
@@ -39,8 +40,25 @@ public class ThreadInfo {
     return wrapped;
   }
 
+  // ScheduledThreadPoolExecutor may start FutureTask.run() before schedule()
+  // returns and its exit advice can capture the returned Future. A Callable
+  // wrapper carries the submission-time context into call() without relying
+  // on that later Future capture.
+  public static <V> Callable<V> wrapScheduledCallable(Callable<V> task) {
+    if (!dynamicTaskContextEnabled || task == null || onVirtualThread() || loomTask(task)) {
+      return task;
+    }
+    DynamicTaskCallable<V> wrapped = new DynamicTaskCallable<>(task);
+    captureDynamicTaskContext(wrapped);
+    return wrapped;
+  }
+
   public static boolean isDynamicTaskRunnable(Object task) {
     return task instanceof DynamicTaskRunnable;
+  }
+
+  public static boolean isDynamicTaskCallable(Object task) {
+    return task instanceof DynamicTaskCallable;
   }
 
   public static final class DynamicTaskRunnable implements Runnable {
@@ -55,6 +73,24 @@ public class ThreadInfo {
       enterDynamicTaskContext(this);
       try {
         delegate.run();
+      } finally {
+        exitDynamicTaskContext(this);
+      }
+    }
+  }
+
+  public static final class DynamicTaskCallable<V> implements Callable<V> {
+    private final Callable<V> delegate;
+
+    private DynamicTaskCallable(Callable<V> delegate) {
+      this.delegate = Objects.requireNonNull(delegate);
+    }
+
+    @Override
+    public V call() throws Exception {
+      enterDynamicTaskContext(this);
+      try {
+        return delegate.call();
       } finally {
         exitDynamicTaskContext(this);
       }
@@ -119,11 +155,11 @@ public class ThreadInfo {
     }
     NativeMemory packet = DYNAMIC_TASK_PACKET.get();
     if (packet == null) {
-      packet = new NativeMemory(8);
+      packet = new NativeMemory(16);
       DYNAMIC_TASK_PACKET.set(packet);
     }
     packet.setByte(0, op.code);
-    packet.setInt(1, System.identityHashCode(task));
+    packet.setLong(1, TaskIdentityRegistry.idFor(task));
     Agent.NativeLib.ioctl(0, Agent.IOCTL_CMD, packet.getAddress());
   }
 
