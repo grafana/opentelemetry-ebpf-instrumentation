@@ -64,8 +64,7 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	scanner := bufio.NewScanner(output)
-	require.True(t, scanner.Scan())
-	tid, err := strconv.Atoi(scanner.Text())
+	tid, err := strconv.Atoi(scanJavaInt(t, scanner))
 	require.NoError(t, err)
 	pid := app.PID(cmd.Process.Pid)
 
@@ -101,6 +100,17 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 	server := BpfTpInfoPidT{Tp: BpfTpInfoT{TraceId: traceID, SpanId: serverID, Flags: 1, Ts: uint64(timing.MonoTimeNow())}, Pid: uint32(pid), Valid: 1}
 	require.NoError(t, tracer.bpfObjects.ServerTraces.Update(&key, &server, ebpf.UpdateAny))
 	probes := make([]io.Closer, 0, 2)
+	countTaskContexts := func() int {
+		iterator := tracer.bpfObjects.JavaDynamicTaskContexts.Iterate()
+		var taskKey BpfJavaDynamicTaskKey
+		var taskContext BpfJavaDynamicContext
+		count := 0
+		for iterator.Next(&taskKey, &taskContext) {
+			count++
+		}
+		require.NoError(t, iterator.Err())
+		return count
+	}
 	for i, method := range []string{"outer", "inner"} {
 		spec := config.CustomSpanSpec{Name: method, On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget." + method}}
 		probe, err := target.AttachLiveSpan(pid, fi.Ns(), &spec, uint64(i+1), method, 1)
@@ -109,6 +119,10 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 	}
 	_, err = io.WriteString(input, "CALL\n")
 	require.NoError(t, err)
+	require.Equal(t, "42", scanJavaInt(t, scanner), "outer must return before task release")
+	_, err = io.WriteString(input, "RELEASE\n")
+	require.NoError(t, err)
+	require.Equal(t, "43", scanJavaInt(t, scanner))
 	received := map[string]request.Span{}
 	var client request.Span
 	deadline := time.After(10 * time.Second)
@@ -128,6 +142,7 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 		}
 	}
 	outer, inner := received["outer"], received["inner"]
+	t.Logf("observed IDs: outer trace=%s span=%s parent=%s; inner trace=%s span=%s parent=%s; client trace=%s span=%s parent=%s", outer.TraceID, outer.SpanID, outer.ParentSpanID, inner.TraceID, inner.SpanID, inner.ParentSpanID, client.TraceID, client.SpanID, client.ParentSpanID)
 	require.Equal(t, traceID, outer.TraceID)
 	require.Equal(t, serverID, outer.ParentSpanID)
 	require.Equal(t, outer.TraceID, inner.TraceID)
@@ -136,7 +151,7 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 	require.Equal(t, inner.SpanID, client.ParentSpanID, "automatic client must inherit the innermost Java method")
 	require.Equal(t, "42", outer.CustomSpan.Attrs["arg0"])
 	require.Equal(t, "hello", outer.CustomSpan.Attrs["arg1"])
-	require.Equal(t, "43", outer.CustomSpan.Attrs["return0"])
+	require.Equal(t, "42", outer.CustomSpan.Attrs["return0"])
 	for i, probe := range probes {
 		count, err := probe.(interface{ Invocations() (uint64, error) }).Invocations()
 		require.NoError(t, err)
@@ -147,10 +162,10 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 	}
 	_, err = io.WriteString(input, "CALL\n")
 	require.NoError(t, err)
-	require.True(t, scanner.Scan())
-	require.Equal(t, "43", scanner.Text())
-	require.True(t, scanner.Scan())
-	require.Equal(t, "43", scanner.Text())
+	require.Equal(t, "42", scanJavaInt(t, scanner))
+	_, err = io.WriteString(input, "RELEASE\n")
+	require.NoError(t, err)
+	require.Equal(t, "43", scanJavaInt(t, scanner))
 	select {
 	case batch := <-spans:
 		for _, span := range batch {
@@ -163,28 +178,472 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 	var restored BpfTpInfoPidT
 	require.NoError(t, tracer.bpfObjects.ServerTraces.Lookup(&key, &restored))
 	require.Equal(t, server, restored, "custom spans must preserve automatic server state")
+
+	for _, scenario := range []struct {
+		command   string
+		release   string
+		outerName string
+		innerName string
+	}{
+		{command: "CALL_SCHEDULED", release: "RELEASE_SCHEDULED", outerName: "outerScheduled", innerName: "innerScheduled"},
+		{command: "CALL_SCHEDULED_RUNNABLE", release: "RELEASE_SCHEDULED_RUNNABLE", outerName: "outerScheduledRunnable", innerName: "innerScheduledRunnable"},
+		{command: "CALL_FORKJOIN", release: "RELEASE_FORKJOIN", outerName: "outerForkJoin", innerName: "innerForkJoin"},
+		{command: "CALL_FORKJOIN_SUBMIT", release: "RELEASE_FORKJOIN_SUBMIT", outerName: "outerForkJoinSubmit", innerName: "innerForkJoinSubmit"},
+	} {
+		outerProbe, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: scenario.outerName, On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget." + scenario.outerName}}, 3, scenario.outerName, 1)
+		require.NoError(t, err)
+		innerProbe, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: scenario.innerName, On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget." + scenario.innerName}}, 4, scenario.innerName, 1)
+		require.NoError(t, err)
+		_, err = io.WriteString(input, scenario.command+"\n")
+		require.NoError(t, err)
+		require.Equal(t, "42", scanJavaInt(t, scanner), scenario.outerName+" must return before worker release")
+		_, err = io.WriteString(input, scenario.release+"\n")
+		require.NoError(t, err)
+		require.Equal(t, "43", scanJavaInt(t, scanner))
+
+		found := map[string]request.Span{}
+		var nestedClient request.Span
+		deadline := time.After(10 * time.Second)
+		for len(found) < 2 || !nestedClient.SpanID.IsValid() {
+			select {
+			case batch := <-spans:
+				for _, span := range batch {
+					if span.Type == request.EventTypeCustomSpan && (span.Method == scenario.outerName || span.Method == scenario.innerName) {
+						found[span.Method] = span
+					}
+					if span.Type == request.EventTypeHTTPClient {
+						nestedClient = span
+					}
+				}
+			case <-deadline:
+				t.Fatalf("missing %s/%s spans: %+v", scenario.outerName, scenario.innerName, found)
+			}
+		}
+		outer, inner := found[scenario.outerName], found[scenario.innerName]
+		t.Logf("%s: outer span=%s parent=%s; inner span=%s parent=%s", scenario.outerName, outer.SpanID, outer.ParentSpanID, inner.SpanID, inner.ParentSpanID)
+		require.Equal(t, serverID, outer.ParentSpanID)
+		require.Equal(t, outer.SpanID, inner.ParentSpanID, scenario.innerName+" must inherit the submitting dynamic span")
+		require.Equal(t, inner.SpanID, nestedClient.ParentSpanID)
+		for i, probe := range []io.Closer{outerProbe, innerProbe} {
+			count, err := probe.(interface{ Invocations() (uint64, error) }).Invocations()
+			require.NoError(t, err)
+			require.Equal(t, uint64(1), count)
+			require.NoError(t, probe.Close())
+			var value uint64
+			require.ErrorIs(t, tracer.bpfObjects.ObiDynamicInvocations.Lookup(uint64(i+3), &value), ebpf.ErrKeyNotExist)
+		}
+	}
+
+	// Verify an exceptional scheduled task exits its scope and the same worker
+	// carries a fresh context on the subsequent task.
+	exceptionOuter, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: "outerScheduledException", On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget.outerScheduledException"}}, 9, "outerScheduledException", 1)
+	require.NoError(t, err)
+	exceptionInner, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: "innerScheduledExceptionRecovery", On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget.innerScheduledExceptionRecovery"}}, 10, "innerScheduledExceptionRecovery", 1)
+	require.NoError(t, err)
+	_, err = io.WriteString(input, "CALL_SCHEDULED_EXCEPTION\n")
+	require.NoError(t, err)
+	require.Equal(t, "42", scanJavaInt(t, scanner), "exception/recovery scenario return marker")
+	exceptionSpans := map[string]request.Span{}
+	var exceptionClient request.Span
+	exceptionDeadline := time.After(10 * time.Second)
+	for len(exceptionSpans) < 2 || !exceptionClient.SpanID.IsValid() {
+		select {
+		case batch := <-spans:
+			for _, span := range batch {
+				if span.Type == request.EventTypeCustomSpan && (span.Method == "outerScheduledException" || span.Method == "innerScheduledExceptionRecovery") {
+					exceptionSpans[span.Method] = span
+				}
+				if span.Type == request.EventTypeHTTPClient {
+					exceptionClient = span
+				}
+			}
+		case <-exceptionDeadline:
+			t.Fatalf("timed out waiting for exception recovery spans: %+v", exceptionSpans)
+		}
+	}
+	exceptionOuterSpan := exceptionSpans["outerScheduledException"]
+	exceptionInnerSpan := exceptionSpans["innerScheduledExceptionRecovery"]
+	require.Equal(t, serverID, exceptionOuterSpan.ParentSpanID)
+	require.Equal(t, exceptionOuterSpan.SpanID, exceptionInnerSpan.ParentSpanID)
+	require.Equal(t, exceptionInnerSpan.SpanID, exceptionClient.ParentSpanID)
+	for i, probe := range []io.Closer{exceptionOuter, exceptionInner} {
+		count, err := probe.(interface{ Invocations() (uint64, error) }).Invocations()
+		require.NoError(t, err)
+		require.Equal(t, uint64(1), count)
+		require.NoError(t, probe.Close())
+		var value uint64
+		require.ErrorIs(t, tracer.bpfObjects.ObiDynamicInvocations.Lookup(uint64(i+9), &value), ebpf.ErrKeyNotExist)
+	}
+
+	// A task rejected while its submitter span is active must not retain that
+	// context if the same task object is later run without an executor handoff.
+	rejectedOuter, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: "outerRejectedTask", On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget.outerRejectedTask"}}, 11, "outerRejectedTask", 1)
+	require.NoError(t, err)
+	rejectedInner, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: "innerRejectedTask", On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget.innerRejectedTask"}}, 12, "innerRejectedTask", 1)
+	require.NoError(t, err)
+	_, err = io.WriteString(input, "CALL_REJECTED_TASK\n")
+	require.NoError(t, err)
+	require.Equal(t, "42", scanJavaInt(t, scanner), "rejected submitter return marker")
+	_, err = io.WriteString(input, "RUN_REJECTED_TASK\n")
+	require.NoError(t, err)
+	require.Equal(t, "42", scanJavaInt(t, scanner), "raw task execution marker")
+	rejectedSpans := map[string]request.Span{}
+	rejectedDeadline := time.After(10 * time.Second)
+	for len(rejectedSpans) < 2 {
+		select {
+		case batch := <-spans:
+			for _, span := range batch {
+				if span.Type == request.EventTypeCustomSpan && (span.Method == "outerRejectedTask" || span.Method == "innerRejectedTask") {
+					rejectedSpans[span.Method] = span
+				}
+			}
+		case <-rejectedDeadline:
+			t.Fatalf("timed out waiting for rejected-task spans: %+v", rejectedSpans)
+		}
+	}
+	rejectedOuterSpan := rejectedSpans["outerRejectedTask"]
+	rejectedInnerSpan := rejectedSpans["innerRejectedTask"]
+	require.Equal(t, serverID, rejectedOuterSpan.ParentSpanID)
+	require.NotEqual(t, rejectedOuterSpan.SpanID, rejectedInnerSpan.ParentSpanID, "rejected task must not keep its submitter's stale dynamic context")
+	for i, probe := range []io.Closer{rejectedOuter, rejectedInner} {
+		count, err := probe.(interface{ Invocations() (uint64, error) }).Invocations()
+		require.NoError(t, err)
+		require.Equal(t, uint64(1), count)
+		require.NoError(t, probe.Close())
+		var value uint64
+		require.ErrorIs(t, tracer.bpfObjects.ObiDynamicInvocations.Lookup(uint64(i+11), &value), ebpf.ErrKeyNotExist)
+	}
+
+	// Cancellation must delete the context captured before scheduling a
+	// Runnable, even though the scheduler has not run that task yet.
+	contextsBeforeCancellation := countTaskContexts()
+	cancelOuter, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: "outerCancelledTask", On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget.outerCancelledTask"}}, 13, "outerCancelledTask", 1)
+	require.NoError(t, err)
+	_, err = io.WriteString(input, "CALL_SCHEDULED_CANCELLED\n")
+	require.NoError(t, err)
+	require.Equal(t, "42", scanJavaInt(t, scanner), "cancelled submitter return marker")
+	require.Eventually(t, func() bool { return countTaskContexts() > contextsBeforeCancellation }, 5*time.Second, 10*time.Millisecond, "scheduled task context was not captured")
+	_, err = io.WriteString(input, "CANCEL_SCHEDULED\n")
+	require.NoError(t, err)
+	require.Equal(t, "42", scanJavaInt(t, scanner), "scheduled task cancellation marker")
+	require.Eventually(t, func() bool { return countTaskContexts() == contextsBeforeCancellation }, 5*time.Second, 10*time.Millisecond, "cancellation left a stale dynamic task context")
+	cancelInner, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: "innerCancelledTask", On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget.innerCancelledTask"}}, 14, "innerCancelledTask", 1)
+	require.NoError(t, err)
+	_, err = io.WriteString(input, "RUN_CANCELLED_TASK\n")
+	require.NoError(t, err)
+	require.Equal(t, "43", scanJavaInt(t, scanner), "post-cancellation worker reuse marker")
+	cancelSpans := map[string]request.Span{}
+	var cancelClientSpan request.Span
+	cancelDeadline := time.After(10 * time.Second)
+	for len(cancelSpans) < 2 || !cancelClientSpan.SpanID.IsValid() {
+		select {
+		case batch := <-spans:
+			for _, span := range batch {
+				if span.Type == request.EventTypeCustomSpan && (span.Method == "outerCancelledTask" || span.Method == "innerCancelledTask") {
+					cancelSpans[span.Method] = span
+				}
+				if span.Type == request.EventTypeHTTPClient {
+					cancelClientSpan = span
+				}
+			}
+		case <-cancelDeadline:
+			t.Fatalf("timed out waiting for cancellation cleanup spans: %+v", cancelSpans)
+		}
+	}
+	cancelOuterSpan := cancelSpans["outerCancelledTask"]
+	cancelInnerSpan := cancelSpans["innerCancelledTask"]
+	require.Equal(t, serverID, cancelInnerSpan.ParentSpanID, "post-cancellation task must use fresh server context")
+	require.NotEqual(t, cancelOuterSpan.SpanID, cancelInnerSpan.ParentSpanID, "cancelled task context leaked to a reused worker")
+	require.Equal(t, cancelInnerSpan.SpanID, cancelClientSpan.ParentSpanID)
+	cancelCount, err := cancelOuter.(interface{ Invocations() (uint64, error) }).Invocations()
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), cancelCount)
+	require.NoError(t, cancelOuter.Close())
+	cancelInnerCount, err := cancelInner.(interface{ Invocations() (uint64, error) }).Invocations()
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), cancelInnerCount)
+	require.NoError(t, cancelInner.Close())
+
+	// Exercise schedule(Runnable) without holding the worker behind a latch. A
+	// ScheduledFuture wrapper can start on the prestarted worker before the
+	// schedule call returns, so this probes the capture/submit-return race.
+	const raceRuns = 64
+	raceOuter, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: "outerScheduledRunnableRace", On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget.outerScheduledRunnableRace"}}, 7, "outerScheduledRunnableRace", 1)
+	require.NoError(t, err)
+	raceInner, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: "innerScheduledRunnableRace", On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget.innerScheduledRunnableRace"}}, 8, "innerScheduledRunnableRace", 1)
+	require.NoError(t, err)
+	_, err = io.WriteString(input, "CALL_SCHEDULED_RUNNABLE_RACE\n")
+	require.NoError(t, err)
+	require.Equal(t, "42", scanJavaInt(t, scanner), "race scenario return marker")
+	var raceOuterSpan request.Span
+	raceInnerSpans := make([]request.Span, 0, raceRuns)
+	raceDeadline := time.After(10 * time.Second)
+	for raceOuterSpan.SpanID == (trace.SpanID{}) || len(raceInnerSpans) < raceRuns {
+		select {
+		case batch := <-spans:
+			for _, span := range batch {
+				if span.Type != request.EventTypeCustomSpan {
+					continue
+				}
+				switch span.Method {
+				case "outerScheduledRunnableRace":
+					raceOuterSpan = span
+				case "innerScheduledRunnableRace":
+					raceInnerSpans = append(raceInnerSpans, span)
+				}
+			}
+		case <-raceDeadline:
+			t.Fatalf("timed out waiting for race spans: outer=%+v inner=%d/%d", raceOuterSpan, len(raceInnerSpans), raceRuns)
+		}
+	}
+	for _, span := range raceInnerSpans {
+		require.Equal(t, raceOuterSpan.SpanID, span.ParentSpanID, "scheduled runnable must retain its submitter context")
+	}
+	for i, probe := range []io.Closer{raceOuter, raceInner} {
+		count, err := probe.(interface{ Invocations() (uint64, error) }).Invocations()
+		require.NoError(t, err)
+		want := uint64(1)
+		if i == 1 {
+			want = raceRuns
+		}
+		require.Equal(t, want, count)
+		require.NoError(t, probe.Close())
+		var value uint64
+		require.ErrorIs(t, tracer.bpfObjects.ObiDynamicInvocations.Lookup(uint64(i+7), &value), ebpf.ErrKeyNotExist)
+	}
+
+	// A task submitted from inside another selected method should inherit the
+	// innermost method span, not just the original request/thread context.
+	nestedOuter, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: "outerNestedTask", On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget.outerNestedTask"}}, 15, "outerNestedTask", 1)
+	require.NoError(t, err)
+	nestedInner, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: "innerNestedTask", On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget.innerNestedTask"}}, 16, "innerNestedTask", 1)
+	require.NoError(t, err)
+	nestedChild, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: "innerNestedChild", On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget.innerNestedChild"}}, 17, "innerNestedChild", 1)
+	require.NoError(t, err)
+	_, err = io.WriteString(input, "CALL_NESTED_TASK\n")
+	require.NoError(t, err)
+	require.Equal(t, "42", scanJavaInt(t, scanner), "nested submitter return marker")
+	_, err = io.WriteString(input, "RELEASE_NESTED_TASK\n")
+	require.NoError(t, err)
+	require.Equal(t, "43", scanJavaInt(t, scanner), "nested task result marker")
+	nestedSpans := map[string]request.Span{}
+	var nestedClient request.Span
+	nestedDeadline := time.After(10 * time.Second)
+	for len(nestedSpans) < 3 || !nestedClient.SpanID.IsValid() {
+		select {
+		case batch := <-spans:
+			for _, span := range batch {
+				if span.Type == request.EventTypeCustomSpan && (span.Method == "outerNestedTask" || span.Method == "innerNestedTask" || span.Method == "innerNestedChild") {
+					nestedSpans[span.Method] = span
+				}
+				if span.Type == request.EventTypeHTTPClient {
+					nestedClient = span
+				}
+			}
+		case <-nestedDeadline:
+			t.Fatalf("timed out waiting for nested-task spans: %+v", nestedSpans)
+		}
+	}
+	require.Equal(t, serverID, nestedSpans["outerNestedTask"].ParentSpanID)
+	require.Equal(t, nestedSpans["outerNestedTask"].SpanID, nestedSpans["innerNestedTask"].ParentSpanID)
+	require.Equal(t, nestedSpans["innerNestedTask"].SpanID, nestedSpans["innerNestedChild"].ParentSpanID)
+	require.Equal(t, nestedSpans["innerNestedChild"].SpanID, nestedClient.ParentSpanID)
+	for i, probe := range []io.Closer{nestedOuter, nestedInner, nestedChild} {
+		count, err := probe.(interface{ Invocations() (uint64, error) }).Invocations()
+		require.NoError(t, err)
+		require.Equal(t, uint64(1), count)
+		require.NoError(t, probe.Close())
+		var value uint64
+		require.ErrorIs(t, tracer.bpfObjects.ObiDynamicInvocations.Lookup(uint64(i+15), &value), ebpf.ErrKeyNotExist)
+	}
+}
+
+func scanJavaInt(t *testing.T, scanner *bufio.Scanner) string {
+	t.Helper()
+	for scanner.Scan() {
+		line := scanner.Text()
+		if _, err := strconv.Atoi(line); err == nil {
+			return line
+		}
+	}
+	require.NoError(t, scanner.Err())
+	t.Fatal("Java process exited without printing the expected integer")
+	return ""
 }
 
 const javaDynamicTargetSource = `
 import java.io.*;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.*;
 public class DynamicTarget {
  private static int port;
- public static int outer(int x, String text) throws Exception { return inner(x); }
+ private static final ExecutorService executor = Executors.newSingleThreadExecutor();
+ private static final ScheduledThreadPoolExecutor scheduler = new ScheduledThreadPoolExecutor(1);
+ static { scheduler.prestartCoreThread(); }
+ private static final CountDownLatch release = new CountDownLatch(1);
+ private static final CountDownLatch scheduledRelease = new CountDownLatch(1);
+ private static final CountDownLatch scheduledRunnableRelease = new CountDownLatch(1);
+ private static final CountDownLatch forkJoinRelease = new CountDownLatch(1);
+ private static final CountDownLatch forkJoinSubmitRelease = new CountDownLatch(1);
+ private static Future<Integer> pending;
+ private static ScheduledFuture<Integer> pendingScheduled;
+ private static ScheduledFuture<?> pendingScheduledRunnable;
+ private static ScheduledFuture<?> pendingCancelledRunnable;
+ private static volatile int scheduledRunnableResult;
+ private static volatile int scheduledExceptionRecoveryResult;
+ private static RejectedTask rejectedTask;
+ private static final Executor rejectingExecutor = new RejectingExecutor();
+ private static ForkJoinTask<Integer> pendingForkJoin;
+ private static final ForkJoinPool forkJoinPool = new ForkJoinPool(1);
+ private static final ExecutorService nestedExecutor = Executors.newFixedThreadPool(2);
+ private static Future<Integer> pendingNested;
+ public static int outer(int x, String text) throws Exception {
+  pending = executor.submit(() -> { release.await(); return inner(x); });
+  return x;
+ }
  public static int inner(int x) throws Exception {
+  request();
+  return x + 1;
+ }
+ public static int outerScheduled(int x) {
+  pendingScheduled = scheduler.schedule(() -> { scheduledRelease.await(); return innerScheduled(x); }, 0, TimeUnit.MILLISECONDS);
+  return x;
+ }
+ public static int innerScheduled(int x) throws Exception {
+  request();
+  return x + 1;
+ }
+ public static int outerScheduledRunnable(int x) {
+  pendingScheduledRunnable = scheduler.schedule(new Runnable() {
+   @Override public void run() {
+    try { scheduledRunnableRelease.await(); scheduledRunnableResult = innerScheduledRunnable(x); }
+    catch (Exception error) { throw new RuntimeException(error); }
+   }
+  }, 0, TimeUnit.MILLISECONDS);
+  return x;
+ }
+ public static int innerScheduledRunnable(int x) throws Exception {
+  request();
+  return x + 1;
+ }
+ public static int outerScheduledException(int x) throws Exception {
+  try {
+   scheduler.schedule(new Runnable() {
+    @Override public void run() { throw new IllegalStateException("expected scheduled-task failure"); }
+   }, 0, TimeUnit.MILLISECONDS).get();
+   throw new AssertionError("scheduled task should fail");
+  } catch (ExecutionException expected) {
+   if (!(expected.getCause() instanceof IllegalStateException)) throw expected;
+  }
+  scheduler.schedule(new Runnable() {
+   @Override public void run() {
+    try { scheduledExceptionRecoveryResult = innerScheduledExceptionRecovery(x); }
+    catch (Exception error) { throw new RuntimeException(error); }
+   }
+  }, 0, TimeUnit.MILLISECONDS).get();
+  return x;
+ }
+ public static int innerScheduledExceptionRecovery(int x) throws Exception {
+  request();
+  return x + 1;
+ }
+ public static int outerCancelledTask(int x) {
+  pendingCancelledRunnable = scheduler.schedule(new Runnable() {
+   @Override public void run() { throw new AssertionError("cancelled task must not run"); }
+  }, 1, TimeUnit.HOURS);
+  return x;
+ }
+ public static int innerCancelledTask(int x) throws Exception { request(); return x + 1; }
+ public static int outerRejectedTask(int x) {
+  rejectedTask = new RejectedTask(x);
+  try { rejectingExecutor.execute(rejectedTask); throw new AssertionError("task should be rejected"); }
+  catch (RejectedExecutionException expected) {}
+  return x;
+ }
+ public static int innerRejectedTask(int x) { return x + 1; }
+ private static final class RejectedTask implements Runnable {
+  private final int value;
+  private RejectedTask(int value) { this.value = value; }
+  @Override public void run() { innerRejectedTask(value); }
+ }
+ private static final class RejectingExecutor implements Executor {
+  @Override public void execute(Runnable task) { throw new RejectedExecutionException("expected rejection"); }
+ }
+ public static int outerScheduledRunnableRace(int x) throws Exception {
+  for (int i = 0; i < 64; i++) {
+   scheduler.schedule(new Runnable() {
+    @Override public void run() {
+     try { innerScheduledRunnableRace(x); }
+     catch (Exception error) { throw new RuntimeException(error); }
+    }
+   }, 0, TimeUnit.MILLISECONDS).get();
+  }
+  return x;
+ }
+ public static int innerScheduledRunnableRace(int x) throws Exception {
+  request();
+  return x + 1;
+ }
+ public static int outerForkJoin(int x) {
+  pendingForkJoin = ForkJoinTask.adapt((Callable<Integer>) () -> { forkJoinRelease.await(); return innerForkJoin(x); });
+  pendingForkJoin.fork();
+  return x;
+ }
+ public static int innerForkJoin(int x) throws Exception {
+  request();
+  return x + 1;
+ }
+ public static int outerForkJoinSubmit(int x) {
+  pendingForkJoin = ForkJoinTask.adapt((Callable<Integer>) () -> { forkJoinSubmitRelease.await(); return innerForkJoinSubmit(x); });
+  forkJoinPool.submit(pendingForkJoin);
+  return x;
+ }
+ public static int innerForkJoinSubmit(int x) throws Exception {
+  request();
+  return x + 1;
+ }
+ public static int outerNestedTask(int x) {
+  pendingNested = nestedExecutor.submit(() -> { innerNestedTask(x); return x + 1; });
+  return x;
+ }
+ public static int innerNestedTask(int x) throws Exception {
+  return nestedExecutor.submit(() -> innerNestedChild(x)).get();
+ }
+ public static int innerNestedChild(int x) throws Exception { request(); return x + 1; }
+ private static void request() throws Exception {
   try (Socket socket = new Socket("127.0.0.1", port)) {
    socket.getOutputStream().write("GET /nested HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
    while (socket.getInputStream().read() != -1) {}
   }
-  return x + 1;
  }
  public static void main(String[] args) throws Exception {
   port = Integer.parseInt(args[0]);
   Class<?> nativeLib = Class.forName("io.opentelemetry.obi.java.Agent$NativeLib", true, null);
   System.out.println(nativeLib.getMethod("gettid").invoke(null));
   BufferedReader input = new BufferedReader(new InputStreamReader(System.in));
-  while (input.readLine() != null) System.out.println(outer(42, "hello"));
+  String line;
+  while ((line = input.readLine()) != null) {
+   if (line.equals("CALL")) System.out.println(outer(42, "hello"));
+   else if (line.equals("RELEASE")) { release.countDown(); System.out.println(pending.get()); }
+   else if (line.equals("CALL_SCHEDULED")) System.out.println(outerScheduled(42));
+   else if (line.equals("RELEASE_SCHEDULED")) { scheduledRelease.countDown(); System.out.println(pendingScheduled.get()); }
+   else if (line.equals("CALL_SCHEDULED_RUNNABLE")) System.out.println(outerScheduledRunnable(42));
+   else if (line.equals("RELEASE_SCHEDULED_RUNNABLE")) { scheduledRunnableRelease.countDown(); pendingScheduledRunnable.get(); System.out.println(scheduledRunnableResult); }
+   else if (line.equals("CALL_SCHEDULED_EXCEPTION")) System.out.println(outerScheduledException(42));
+   else if (line.equals("CALL_SCHEDULED_CANCELLED")) System.out.println(outerCancelledTask(42));
+   else if (line.equals("CANCEL_SCHEDULED")) { if (!pendingCancelledRunnable.cancel(false)) throw new AssertionError("scheduled task cancellation failed"); System.out.println(42); }
+   else if (line.equals("RUN_CANCELLED_TASK")) System.out.println(scheduler.schedule(() -> innerCancelledTask(42), 0, TimeUnit.MILLISECONDS).get());
+   else if (line.equals("CALL_REJECTED_TASK")) System.out.println(outerRejectedTask(42));
+   else if (line.equals("RUN_REJECTED_TASK")) { Thread worker = new Thread(rejectedTask); worker.start(); worker.join(); System.out.println(42); }
+   else if (line.equals("CALL_SCHEDULED_RUNNABLE_RACE")) System.out.println(outerScheduledRunnableRace(42));
+   else if (line.equals("CALL_FORKJOIN")) System.out.println(outerForkJoin(42));
+   else if (line.equals("RELEASE_FORKJOIN")) { forkJoinRelease.countDown(); System.out.println(pendingForkJoin.join()); }
+   else if (line.equals("CALL_FORKJOIN_SUBMIT")) System.out.println(outerForkJoinSubmit(42));
+   else if (line.equals("RELEASE_FORKJOIN_SUBMIT")) { forkJoinSubmitRelease.countDown(); System.out.println(pendingForkJoin.join()); }
+   else if (line.equals("CALL_NESTED_TASK")) System.out.println(outerNestedTask(42));
+   else if (line.equals("RELEASE_NESTED_TASK")) System.out.println(pendingNested.get());
+  }
  }
 }
 `

@@ -40,6 +40,9 @@ public class RunnableInst {
       if (ThreadInfo.loomTaskOrVirtualThread(task)) {
         return SSLStorage.NO_JDK_HTTP_CLIENT_CONTEXT;
       }
+      if (!ThreadInfo.isDynamicTaskRunnable(task)) {
+        ThreadInfo.enterDynamicTaskContext(task);
+      }
       long previousContext = SSLStorage.enterJdkHttpClientTask(task);
       Long parentId = SSLStorage.parentThreadId(task);
       if (parentId != null) {
@@ -62,7 +65,10 @@ public class RunnableInst {
     }
 
     @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
-    public static void exit(@Advice.Enter long previousContext) {
+    public static void exit(@Advice.This Runnable task, @Advice.Enter long previousContext) {
+      if (!ThreadInfo.isDynamicTaskRunnable(task)) {
+        ThreadInfo.exitDynamicTaskContext(task);
+      }
       SSLStorage.restoreJdkHttpClientContext(previousContext);
     }
   }

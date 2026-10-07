@@ -17,7 +17,11 @@ public enum OperationType {
   JVM_GC_DURATION((byte) 7),
   DYNAMIC_SPAN_START((byte) 8),
   DYNAMIC_SPAN_END((byte) 9),
-  DYNAMIC_READY((byte) 10);
+  DYNAMIC_READY((byte) 10),
+  DYNAMIC_TASK_CAPTURE((byte) 11),
+  DYNAMIC_TASK_ENTER((byte) 12),
+  DYNAMIC_TASK_EXIT((byte) 13),
+  DYNAMIC_TASK_CANCEL((byte) 14);
 
   public final byte code;
 

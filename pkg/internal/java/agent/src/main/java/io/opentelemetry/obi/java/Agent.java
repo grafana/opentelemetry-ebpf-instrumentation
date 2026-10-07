@@ -166,6 +166,8 @@ public class Agent {
         .transform(NettySSLHandlerInst.transformer())
         .type(JavaExecutorInst.type())
         .transform(JavaExecutorInst.transformer())
+        .type(JavaFutureInst.type())
+        .transform(JavaFutureInst.transformer())
         .type(JdkHttpClientInst.type())
         .transform(JdkHttpClientInst.transformer())
         .type(CallableInst.type())
@@ -181,6 +183,8 @@ public class Agent {
     if (optEnabled(opts, "dynamicInstrumentation")) {
       try {
         io.opentelemetry.obi.java.dynamic.DynamicControl.start(inst);
+        Class<?> bootstrapThreadInfo = Class.forName(ThreadInfo.class.getName(), true, null);
+        bootstrapThreadInfo.getMethod("enableDynamicTaskContext").invoke(null);
       } catch (Throwable error) {
         System.err.println("Failed to start Java dynamic instrumentation");
         error.printStackTrace(System.err);
@@ -199,12 +203,16 @@ public class Agent {
         error.printStackTrace(System.err);
       }
     }
+
+    // Some JDK executor classes can be loaded during agent initialization itself.
+    // Revisit already-loaded targets just as agentmain does, otherwise the new
+    // transformers silently miss them in the premain case.
+    retransformLoadedClasses(inst);
   }
 
   // Needed for Dynamic Agent Injection
   public static void agentmain(String args, Instrumentation inst) {
     premain(args, inst);
-    retransformLoadedClasses(inst);
   }
 
   // Package-private for testing. Retransforms already-loaded classes that match the agent's
@@ -224,6 +232,7 @@ public class Agent {
           || SSLEngineInst.matches(clazz)
           || SocketChannelInst.matches(clazz)
           || JavaExecutorInst.matches(clazz)
+          || JavaFutureInst.matches(clazz)
           || JdkHttpClientInst.matches(clazz)
           || CallableInst.matches(clazz)
           || RunnableInst.matches(clazz)
@@ -308,7 +317,8 @@ public class Agent {
           "io.opentelemetry.obi.java.dynamic.DynamicSpanRuntime$1",
           "io.opentelemetry.obi.java.dynamic.DynamicSpanRuntime$Invocation",
           "io.opentelemetry.obi.java.dynamic.SpanContextBridge",
-          "io.opentelemetry.obi.java.ebpf.DynamicSpanPacket"
+          "io.opentelemetry.obi.java.ebpf.DynamicSpanPacket",
+          "io.opentelemetry.obi.java.ebpf.ThreadInfo$DynamicTaskRunnable"
         }) {
       dynamicClasses.put(name, locator.locate(name).resolve());
     }

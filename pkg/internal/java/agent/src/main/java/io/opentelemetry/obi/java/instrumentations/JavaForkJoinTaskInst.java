@@ -54,6 +54,7 @@ public class JavaForkJoinTaskInst {
       if (ThreadInfo.loomTaskOrVirtualThread(task)) {
         return;
       }
+      ThreadInfo.captureDynamicTaskContext(task);
       long threadId = Agent.NativeLib.gettid();
       SSLStorage.trackTask(threadId, task);
       if (SSLStorage.bootDebugOn().equals(true)) {
@@ -66,6 +67,7 @@ public class JavaForkJoinTaskInst {
         @Advice.This ForkJoinTask<?> task, @Advice.Thrown Throwable throwable) {
       if (throwable != null) {
         SSLStorage.untrackTask(task);
+        ThreadInfo.cancelDynamicTaskContext(task);
       }
     }
   }
@@ -79,6 +81,7 @@ public class JavaForkJoinTaskInst {
       if (ThreadInfo.loomTaskOrVirtualThread(task)) {
         return SSLStorage.NO_JDK_HTTP_CLIENT_CONTEXT;
       }
+      ThreadInfo.enterDynamicTaskContext(task);
       long previousContext = SSLStorage.enterJdkHttpClientTask(task);
       Long parentId = SSLStorage.parentThreadId(task);
       long threadId = Agent.NativeLib.gettid();
@@ -101,7 +104,9 @@ public class JavaForkJoinTaskInst {
     }
 
     @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
-    public static void exitJobSubmit(@Advice.Enter long previousContext) {
+    public static void exitJobSubmit(
+        @Advice.This ForkJoinTask<?> task, @Advice.Enter long previousContext) {
+      ThreadInfo.exitDynamicTaskContext(task);
       SSLStorage.restoreJdkHttpClientContext(previousContext);
     }
   }

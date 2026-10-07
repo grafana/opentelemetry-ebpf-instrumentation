@@ -49,6 +49,7 @@ public class CallableInst {
       if (ThreadInfo.loomTaskOrVirtualThread(task)) {
         return SSLStorage.NO_JDK_HTTP_CLIENT_CONTEXT;
       }
+      ThreadInfo.enterDynamicTaskContext(task);
       long previousContext = SSLStorage.enterJdkHttpClientTask(task);
       Long parentId = SSLStorage.parentThreadId(task);
       if (parentId != null) {
@@ -71,7 +72,8 @@ public class CallableInst {
     }
 
     @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
-    public static void exit(@Advice.Enter long previousContext) {
+    public static void exit(@Advice.This Callable<?> task, @Advice.Enter long previousContext) {
+      ThreadInfo.exitDynamicTaskContext(task);
       SSLStorage.restoreJdkHttpClientContext(previousContext);
     }
   }

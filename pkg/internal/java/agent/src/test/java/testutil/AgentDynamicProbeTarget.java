@@ -4,6 +4,7 @@
  */
 package testutil;
 
+import io.opentelemetry.instrumentation.annotations.WithSpan;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
@@ -15,6 +16,7 @@ public final class AgentDynamicProbeTarget {
   private static Object tracer;
   private static String serverID;
   private static String traceID;
+  private static String annotationID;
   private static boolean attached;
 
   public static void main(String[] args) throws Exception {
@@ -36,21 +38,40 @@ public final class AgentDynamicProbeTarget {
     serverID = id(serverContext, "getSpanId");
     traceID = id(serverContext, "getTraceId");
     Object scope = span.getMethod("makeCurrent").invoke(server);
-    attached = true;
-    work();
-    check(id(current(), "getSpanId").equals(serverID), "SDK scope not restored");
-    controller.getClass().getMethod("detach", long.class).invoke(controller, 101L);
-    attached = false;
-    work();
-    Class.forName(API + ".context.Scope", true, null).getMethod("close").invoke(scope);
-    span.getMethod("end").invoke(server);
+    try {
+      attached = true;
+      annotatedWork();
+      check(id(current(), "getSpanId").equals(serverID), "SDK scope not restored");
+      controller.getClass().getMethod("detach", long.class).invoke(controller, 101L);
+      attached = false;
+      work();
+    } finally {
+      attached = false;
+      controller.getClass().getMethod("detach", long.class).invoke(controller, 101L);
+      Class.forName(API + ".context.Scope", true, null).getMethod("close").invoke(scope);
+      span.getMethod("end").invoke(server);
+    }
     System.out.println("DYNAMIC_OK");
+  }
+
+  @WithSpan("annotated-parent")
+  public static void annotatedWork() throws Exception {
+    annotationID = id(current(), "getSpanId");
+    check(!annotationID.equals(serverID), "@WithSpan did not create an agent span");
+    check(id(current(), "getTraceId").equals(traceID), "annotation span lost server trace");
+    work();
+    check(
+        id(current(), "getSpanId").equals(annotationID),
+        "dynamic scope did not restore annotation span");
   }
 
   public static void work() throws Exception {
     String dynamicID = id(current(), "getSpanId");
     check(id(current(), "getTraceId").equals(traceID), "custom span lost agent trace");
     check(attached != dynamicID.equals(serverID), "incorrect method scope");
+    if (annotationID != null && attached) {
+      check(!dynamicID.equals(annotationID), "dynamic span replaced annotation parent");
+    }
     Object child = start("client");
     Method parent = child.getClass().getMethod("getParentSpanContext");
     parent.setAccessible(true);

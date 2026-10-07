@@ -25,6 +25,28 @@ class DynamicInstrumentationTest {
   }
 
   @Test
+  void taskWrappingPropagatesDynamicContextAndRestoresReusedWorker() throws Exception {
+    File output = new File(directory, "async-output");
+    List<String> command = new ArrayList<>();
+    command.add(System.getProperty("java.home") + "/bin/java");
+    command.add(
+        "-javaagent:" + System.getProperty("obi.agent.jar") + "=dynamicInstrumentation=true");
+    command.add("-cp");
+    command.add(System.getProperty("obi.test.classpath"));
+    command.add("testutil.AsyncDynamicProbeTarget");
+    Process process =
+        new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(output).start();
+    try {
+      assertTrue(process.waitFor(60, TimeUnit.SECONDS), "async fixture timed out");
+      String log = new String(Files.readAllBytes(output.toPath()), StandardCharsets.UTF_8);
+      assertEquals(0, process.exitValue(), log);
+      assertTrue(log.contains("ASYNC_DYNAMIC_OK"), log);
+    } finally {
+      process.destroyForcibly();
+    }
+  }
+
+  @Test
   void interoperatesWithOpenTelemetryJavaAgent() throws Exception {
     String agent = System.getenv("OBI_TEST_OTEL_AGENT_JAR");
     Assumptions.assumeTrue(agent != null, "set OBI_TEST_OTEL_AGENT_JAR for agent coexistence test");
