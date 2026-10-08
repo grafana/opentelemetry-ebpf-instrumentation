@@ -396,13 +396,13 @@ sequenceDiagram
     participant Worker as Worker thread
 
     App->>Agent: enter selected method
-    Agent->>Runtime: enter; push invocation on Java thread-local stack
+    Agent->>Runtime: enter and push invocation on Java thread-local stack
     Runtime->>SDK: read active SDK SpanContext (if any)
     Runtime->>OBI: ioctl DYNAMIC_SPAN_START (parent IDs, or request OBI fallback)
-    OBI->>Maps: create dynamic span; set active context for current thread
+    OBI->>Maps: create dynamic span and set active context for current thread
     OBI-->>Runtime: return resolved trace / parent context
     Runtime->>SDK: make non-recording dynamic SpanContext current in method scope
-    Note over SDK: SDK children can use this span as parent; OBI exports its own span
+    Note over SDK: SDK children can use this span as parent. OBI exports its own span.
 
     App->>Agent: submit task
     Agent->>OBI: ioctl task capture (task identity)
@@ -411,7 +411,7 @@ sequenceDiagram
     Note over Agent,SDK: Java agent/framework Context propagation is separate and conditional
 
     par Selected method completes
-        Agent->>Runtime: exit; pop invocation
+        Agent->>Runtime: exit and pop invocation
         Runtime->>OBI: ioctl DYNAMIC_SPAN_END
         OBI->>Maps: restore enclosing dynamic span, or clear active context
         Runtime->>SDK: restore previous SDK Context scope
@@ -419,7 +419,7 @@ sequenceDiagram
         Task->>Worker: task starts on worker
         Worker->>Agent: Runnable/Callable advice enters task
         Agent->>OBI: ioctl task enter (task identity)
-        OBI->>Maps: save worker's prior context; install captured OBI context
+        OBI->>Maps: save worker's prior context and install captured OBI context
         Note over Worker,Maps: OBI dynamic calls on this worker use the captured span as parent
         Note over SDK: Span.current() follows only Java Context propagation, not the OBI map
         Worker->>Agent: Runnable/Callable advice exits (also on exception)
