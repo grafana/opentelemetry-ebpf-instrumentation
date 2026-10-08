@@ -16,7 +16,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -500,6 +503,53 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 		}
 		return iterator.Err() == nil
 	}, time.Second, 10*time.Millisecond, "virtual-thread mount mapping must be removed after unmount")
+
+	var benchmarkSpans atomic.Int64
+	go func() {
+		for batch := range spans {
+			for _, span := range batch {
+				if span.Type == request.EventTypeCustomSpan && span.Method == "benchWork" {
+					benchmarkSpans.Add(1)
+				}
+			}
+		}
+	}()
+	const benchWarmup = 10000
+	runBenchmark := func(iterations int) int64 {
+		t.Helper()
+		_, err := fmt.Fprintf(input, "BENCH %d\n", iterations)
+		require.NoError(t, err)
+		fields := strings.Fields(scanJavaPrefix(t, scanner, "BENCH_RESULT "))
+		require.Len(t, fields, 3)
+		require.Equal(t, "BENCH_RESULT", fields[0])
+		nanos, err := strconv.ParseInt(fields[1], 10, 64)
+		require.NoError(t, err)
+		return nanos
+	}
+	measurements := func(iterations int, instrumented bool) []int64 {
+		values := make([]int64, 0, 3)
+		for range 3 {
+			elapsed := runBenchmark(iterations)
+			values = append(values, elapsed)
+		}
+		return values
+	}
+	baseline := measurements(100000, false)
+	attachStarted := time.Now()
+	benchProbe, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: "benchWork", On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget.benchWork"}}, 19, "benchWork", 1)
+	require.NoError(t, err)
+	attachPause := time.Since(attachStarted)
+	instrumented := measurements(10000, true)
+	benchInvocations, err := benchProbe.(interface{ Invocations() (uint64, error) }).Invocations()
+	require.NoError(t, err)
+	require.Equal(t, uint64(60000), benchInvocations, "10k warmup plus 3x10k measured calls")
+	require.NoError(t, benchProbe.Close())
+	var benchCookie uint64
+	require.ErrorIs(t, tracer.bpfObjects.ObiDynamicInvocations.Lookup(uint64(19), &benchCookie), ebpf.ErrKeyNotExist)
+	sort.Slice(baseline, func(i, j int) bool { return baseline[i] < baseline[j] })
+	sort.Slice(instrumented, func(i, j int) bool { return instrumented[i] < instrumented[j] })
+	t.Logf("live dynamic attach latency (registry request + Java retransform): %s", attachPause)
+	t.Logf("successful-ioctl hot method: baseline median=%.2f ns/call (100k calls); instrumented median=%.2f ns/call (10k calls); additional=%.2f ns/call; baseline samples=%v instrumented samples=%v; delivered span events=%d (best-effort)", float64(baseline[1])/100000, float64(instrumented[1])/10000, float64(instrumented[1])/10000-float64(baseline[1])/100000, baseline, instrumented, benchmarkSpans.Load())
 }
 
 func TestJavaDynamicMapCapacityLive(t *testing.T) {
@@ -670,6 +720,19 @@ func scanJavaInt(t *testing.T, scanner *bufio.Scanner) string {
 	return ""
 }
 
+func scanJavaPrefix(t *testing.T, scanner *bufio.Scanner, prefix string) string {
+	t.Helper()
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, prefix) {
+			return line
+		}
+	}
+	require.NoError(t, scanner.Err())
+	t.Fatalf("Java process exited without printing a line prefixed with %q", prefix)
+	return ""
+}
+
 const javaDynamicTargetSource = `
 import java.io.*;
 import java.net.Socket;
@@ -807,6 +870,8 @@ public class DynamicTarget {
  }
  public static int innerNestedChild(int x) throws Exception { request(); return x + 1; }
  public static int outerVirtualThread(int x) throws Exception { request(); return x + 1; }
+ private static volatile long benchSink;
+ public static int benchWork(int x) { benchSink += x; return x + 1; }
  private static void request() throws Exception {
   try (Socket socket = new Socket("127.0.0.1", port)) {
    socket.getOutputStream().write("GET /nested HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
@@ -842,6 +907,13 @@ public class DynamicTarget {
     FutureTask<Integer> task = new FutureTask<>(() -> outerVirtualThread(42));
     Thread.startVirtualThread(task);
     System.out.println(task.get());
+   }
+   else if (line.startsWith("BENCH ")) {
+    int iterations = Integer.parseInt(line.substring(6));
+    for (int i = 0; i < 10000; i++) benchWork(i);
+    long started = System.nanoTime();
+    for (int i = 0; i < iterations; i++) benchWork(i);
+    System.out.println("BENCH_RESULT " + (System.nanoTime() - started) + " " + benchSink);
    }
    else if (line.equals("RELEASE_NESTED_TASK")) System.out.println(pendingNested.get());
   }
