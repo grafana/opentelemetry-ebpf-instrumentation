@@ -14,20 +14,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"go.opentelemetry.io/obi/pkg/appolly/app"
 	"go.opentelemetry.io/obi/pkg/appolly/app/request"
-	"go.opentelemetry.io/obi/pkg/config"
+	"go.opentelemetry.io/obi/pkg/appolly/services"
 	obiebpf "go.opentelemetry.io/obi/pkg/ebpf"
 	ebpfcommon "go.opentelemetry.io/obi/pkg/ebpf/common"
 	"go.opentelemetry.io/obi/pkg/export/imetrics"
 	javaagent "go.opentelemetry.io/obi/pkg/internal/java"
+	"go.opentelemetry.io/obi/pkg/liveprober"
 	"go.opentelemetry.io/obi/pkg/obi"
 	"go.opentelemetry.io/obi/pkg/pipe/msg"
 )
@@ -71,7 +74,22 @@ func TestJavaDynamicSpansWithStandaloneSDKLive(t *testing.T) {
 	pid := app.PID(cmd.Process.Pid)
 
 	cfg := obi.DefaultConfig
-	cfg.DynamicInstrumentation.Enabled = true
+	require.NoError(t, yaml.Unmarshal([]byte(`dynamic_instrumentation:
+  enabled: true
+  rules:
+    - service:
+        - open_ports: "8180"
+      spans:
+        - name: dynamic-work
+          on:
+            function_span: StandaloneSdkTarget.work
+        - name: isolated-dynamic-work
+          on:
+            function_span: IsolatedSdkTarget.work
+        - name: isolated-dynamic-throw
+          on:
+            function_span: IsolatedSdkTarget.workThrows
+`), &cfg))
 	filters := ebpfcommon.NewPIDsFilter(&cfg.Discovery, slog.Default(), imetrics.NoopReporter{})
 	tracer := New(filters, &cfg, imetrics.NoopReporter{})
 	events := ebpfcommon.NewEBPFEventContext()
@@ -92,32 +110,25 @@ func TestJavaDynamicSpansWithStandaloneSDKLive(t *testing.T) {
 		names, err := target.ResolveLiveSymbols(pid, "StandaloneSdkTarget.work")
 		return err == nil && len(names) == 1
 	}, 15*time.Second, 100*time.Millisecond)
-	probe, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{
-		Name: "dynamic-work",
-		On:   config.CustomSpanTarget{FunctionSpan: "StandaloneSdkTarget.work"},
-	}, 501, "dynamic-work", 1)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = probe.Close() })
 	require.Eventually(t, func() bool {
 		names, err := target.ResolveLiveSymbols(pid, "IsolatedSdkTarget.work")
 		return err == nil && len(names) == 1
 	}, 15*time.Second, 100*time.Millisecond)
-	isolatedProbe, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{
-		Name: "isolated-dynamic-work",
-		On:   config.CustomSpanTarget{FunctionSpan: "IsolatedSdkTarget.work"},
-	}, 502, "isolated-dynamic-work", 1)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = isolatedProbe.Close() })
 	require.Eventually(t, func() bool {
 		names, err := target.ResolveLiveSymbols(pid, "IsolatedSdkTarget.workThrows")
 		return err == nil && len(names) == 1
 	}, 15*time.Second, 100*time.Millisecond)
-	isolatedThrowProbe, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{
-		Name: "isolated-dynamic-throw",
-		On:   config.CustomSpanTarget{FunctionSpan: "IsolatedSdkTarget.workThrows"},
-	}, 503, "isolated-dynamic-throw", 1)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = isolatedThrowProbe.Close() })
+	service := cfg.DynamicInstrumentation.Rules[0].Service
+	dynamicManager := liveprober.New()
+	dynamicManager.Configure(cfg.DynamicInstrumentation, nil, imetrics.NoopReporter{})
+	dynamicManager.ObserveProcess(int(pid), func(criteria services.GlobDefinitionCriteria) bool {
+		return slices.ContainsFunc(criteria, func(selector services.GlobAttributes) bool {
+			return selector.OpenPorts.Matches(8180)
+		})
+	})
+	require.NoError(t, dynamicManager.RegisterTarget(int(pid), fi.Ns(), target, nil))
+	t.Cleanup(func() { require.NoError(t, dynamicManager.Close()) })
+	require.NoError(t, dynamicManager.SetConfigRules(cfg.DynamicInstrumentation.Rules))
 
 	_, err = io.WriteString(input, "CALL\n")
 	require.NoError(t, err)
@@ -152,8 +163,8 @@ func TestJavaDynamicSpansWithStandaloneSDKLive(t *testing.T) {
 				}
 			}
 		case <-deadline:
-			count, countErr := probe.(interface{ Invocations() (uint64, error) }).Invocations()
-			t.Fatalf("timed out waiting for OBI dynamic method span; invocations=%d err=%v output=%v events=%+v", count, countErr, outputLines, seen)
+			t.Fatalf("timed out waiting for OBI dynamic method span; configured probes=%+v output=%v events=%+v",
+				dynamicManager.ListFunctions(service), outputLines, seen)
 		}
 	}
 	if !dynamic.SpanID.IsValid() {
@@ -232,7 +243,8 @@ func TestJavaDynamicSpansWithStandaloneSDKLive(t *testing.T) {
 	require.Equal(t, unsampled.SpanID.String(), unsampledChild.parent,
 		"the unsampled SDK child should inherit OBI's dynamic method context")
 	require.Zero(t, unsampled.TraceFlags&1, "OBI should preserve the unsampled trace flag")
-	require.NoError(t, probe.Close())
+	require.NoError(t, dynamicManager.SetConfigRules(nil))
+	require.Empty(t, dynamicManager.ListFunctions(service), "removing the config rule must detach live Java probes")
 	t.Logf("unsampled SDK parent=%s/%s OBI dynamic=%s/%s flags=%d SDK exports=0",
 		unsampledParent.trace, unsampledParent.span, unsampled.TraceID, unsampled.SpanID, unsampled.TraceFlags)
 }
@@ -315,6 +327,7 @@ import java.io.File;
 import java.io.InputStreamReader;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.net.ServerSocket;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -375,6 +388,7 @@ public class StandaloneSdkTarget {
   }
 
   public static void main(String[] args) throws Exception {
+    ServerSocket service = new ServerSocket(8180);
     ChildFirstLoader isolatedLoader = new ChildFirstLoader(isolatedClasspath(), StandaloneSdkTarget.class.getClassLoader());
     isolatedTarget = Class.forName("IsolatedSdkTarget", true, isolatedLoader);
     Class<?> nativeLib = Class.forName("io.opentelemetry.obi.java.Agent$NativeLib", true, null);

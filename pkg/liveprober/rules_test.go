@@ -83,6 +83,25 @@ func TestRuleOwnershipGlobDeleteAndReapply(t *testing.T) {
 	require.Len(t, m.ListFunctions(nil), 2)
 }
 
+func TestConfigRuleUpdateAndRemovalReconcileProbes(t *testing.T) {
+	m, tracer := dynamicManager(t)
+	first := ruleFor(t, "main.one")
+	require.NoError(t, m.SetConfigRules([]config.DynamicInstrumentationRule{first}))
+	require.Len(t, m.ListFunctions(nil), 1)
+	require.Equal(t, "main.one", m.ListFunctions(nil)[0].Function)
+
+	updated := ruleFor(t, "main.two")
+	require.NoError(t, m.SetConfigRules([]config.DynamicInstrumentationRule{updated}))
+	require.Len(t, m.ListFunctions(nil), 1)
+	require.Equal(t, "main.two", m.ListFunctions(nil)[0].Function)
+	require.True(t, tracer.links[0].closed, "updated config must detach the old method")
+	require.False(t, tracer.links[1].closed, "updated config must attach the new method")
+
+	require.NoError(t, m.SetConfigRules(nil))
+	require.Empty(t, m.ListFunctions(nil), "removing config rules must detach their probes")
+	require.True(t, tracer.links[1].closed)
+}
+
 func TestRulesReportFailureAndPIDReuse(t *testing.T) {
 	m, tracer := dynamicManager(t)
 	results, err := m.ApplyRule("bad", ruleFor(t, "missing"))

@@ -66,7 +66,7 @@ func TestJavaDynamicControlAndCatalog(t *testing.T) {
 				if _, err := io.ReadFull(conn, header[:]); err != nil {
 					return
 				}
-				if header[0] != 42 || !bytes.Equal(header[16:32], target.session[:]) {
+				if (header[0] != 42 && header[0] != 43) || !bytes.Equal(header[16:32], target.session[:]) {
 					return
 				}
 				operation := header[32]
@@ -121,8 +121,19 @@ func TestJavaDynamicControlAndCatalog(t *testing.T) {
 	mu.Lock()
 	require.Equal(t, javaListMethods, operations[len(operations)-1])
 	mu.Unlock()
+	// A restarted agent advertises a new endpoint token. The target must claim
+	// the new session before sending the next command so the agent can reset
+	// instrumentation left by the prior OBI session.
+	record[16] = 43
+	binary.LittleEndian.PutUint64(record[32:], 3)
+	require.NoError(t, registry.handleReady(&ringbuf.Record{RawSample: record}))
+	_, err = target.ResolveLiveSymbols(pid, "sample.Handler.read")
+	require.NoError(t, err)
+	mu.Lock()
+	require.Equal(t, []byte{javaClaimSession, javaListMethods}, operations[len(operations)-2:])
+	mu.Unlock()
 	registry.Remove(pid)
-	_, found := registry.symbols.get(javaSymbolIdentity{pid: pid, start: target.startTime, revision: 2})
+	_, found := registry.symbols.get(javaSymbolIdentity{pid: pid, start: target.startTime, revision: 3})
 	require.False(t, found)
 }
 
