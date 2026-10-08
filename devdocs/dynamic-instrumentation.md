@@ -376,6 +376,58 @@ explicit SDK parents and new roots retain their SDK semantics.
 
 ### Async context and sampling behavior
 
+The diagram separates OBI's per-thread dynamic-span state from the Java SDK's
+`Context`. OBI advice starts and ends the diagnostic span through ioctl; when an
+SDK context is available, the dynamic span uses it as parent; otherwise the
+ioctl can request OBI's server-context fallback. Advice also makes a
+non-recording representation of the dynamic span current in the SDK for the
+duration of the method. This lets SDK-created children use the dynamic span as
+parent without making the SDK responsible for exporting OBI's span.
+
+```mermaid
+sequenceDiagram
+    participant App as Application method
+    participant Agent as OBI Java agent advice
+    participant Runtime as DynamicSpanRuntime (Java invocation stack)
+    participant SDK as Java agent / SDK Context
+    participant OBI as OBI ioctl handler / eBPF
+    participant Maps as OBI per-thread dynamic context
+    participant Task as Executor task
+    participant Worker as Worker thread
+
+    App->>Agent: enter selected method
+    Agent->>Runtime: enter; push invocation on Java thread-local stack
+    Runtime->>SDK: read active SDK SpanContext (if any)
+    Runtime->>OBI: ioctl DYNAMIC_SPAN_START (parent IDs, or request OBI fallback)
+    OBI->>Maps: create dynamic span; set active context for current thread
+    OBI-->>Runtime: return resolved trace / parent context
+    Runtime->>SDK: make non-recording dynamic SpanContext current in method scope
+    Note over SDK: SDK children can use this span as parent; OBI exports its own span
+
+    App->>Agent: submit task
+    Agent->>OBI: ioctl task capture (task identity)
+    OBI->>Maps: copy active OBI dynamic context to task-identity map
+    Agent-->>Task: submit task with OBI task identity
+    Note over Agent,SDK: Java agent/framework Context propagation is separate and conditional
+
+    par Selected method completes
+        Agent->>Runtime: exit; pop invocation
+        Runtime->>OBI: ioctl DYNAMIC_SPAN_END
+        OBI->>Maps: restore enclosing dynamic span, or clear active context
+        Runtime->>SDK: restore previous SDK Context scope
+    and Task executes asynchronously
+        Task->>Worker: task starts on worker
+        Worker->>Agent: Runnable/Callable advice enters task
+        Agent->>OBI: ioctl task enter (task identity)
+        OBI->>Maps: save worker's prior context; install captured OBI context
+        Note over Worker,Maps: OBI dynamic calls on this worker use the captured span as parent
+        Note over SDK: Span.current() follows only Java Context propagation, not the OBI map
+        Worker->>Agent: Runnable/Callable advice exits (also on exception)
+        Agent->>OBI: ioctl task exit
+        OBI->>Maps: restore prior worker context (or clear it)
+    end
+```
+
 For supported executor and fork/join tasks, the Java agent reports task capture,
 start, completion, and cancellation to OBI over ioctl. OBI's eBPF maps associate
 the task with the active dynamic span, install that context while the task runs,
