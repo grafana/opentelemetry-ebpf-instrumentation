@@ -155,7 +155,9 @@ func TestJavaDynamicSpansWithOpenTelemetryAgentLive(t *testing.T) {
 	duplicateChild := parseSDKSpanLine(t, outputLines, "SDK_DUPLICATE_CHILD")
 	suppressedChild := parseSDKSpanLine(t, outputLines, "SUPPRESSED_CHILD")
 	restored := parseSDKSpanLine(t, outputLines, "SDK_RESTORED")
-	require.Equal(t, parent.span, restored.span, "agent context must be restored after both instrumentations exit")
+
+	// Scenario 1: the OTel agent's @WithSpan annotation creates a child of the
+	// active manual SDK span.
 	require.Equal(t, parent.trace, annotation.trace)
 	require.NotEqual(t, parent.span, annotation.span, "@WithSpan must produce its own active span; output="+strings.Join(outputLines, " "))
 	require.Equal(t, parent.span, annotation.parent, "@WithSpan must retain the manual OTel parent")
@@ -165,6 +167,9 @@ func TestJavaDynamicSpansWithOpenTelemetryAgentLive(t *testing.T) {
 	dynamic := dynamicSpans["obi-work"]
 	duplicate := dynamicSpans["obi-duplicateWork"]
 	suppressed := dynamicSpans["obi-suppressedWork"]
+
+	// Scenario 2: OBI dynamic instrumentation coexists with @WithSpan. On a
+	// method instrumented by both agents, the OTel span is nested under OBI's.
 	require.Equal(t, annotation.span, dynamic.ParentSpanID.String(), "OBI span should be nested under the @WithSpan span")
 	require.Equal(t, parent.trace, dynamic.TraceID.String())
 	require.Equal(t, dynamic.SpanID.String(), child.parent, "SDK child should see the OBI span context")
@@ -176,10 +181,17 @@ func TestJavaDynamicSpansWithOpenTelemetryAgentLive(t *testing.T) {
 		"when both agents instrument the same method, the OTel annotation span should be nested under OBI's dynamic span")
 	require.Equal(t, duplicateAnnotation.span, duplicateChild.parent,
 		"the SDK child should inherit the innermost @WithSpan context")
+
+	// Scenario 3: suppressInstrumentation suppresses the OTel agent's @WithSpan
+	// only; the independent OBI dynamic span and manual SDK span remain active.
 	require.Equal(t, parent.span, suppressed.ParentSpanID.String(),
 		"agent suppression should suppress only OTel's @WithSpan, not OBI's dynamic span")
 	require.Equal(t, suppressed.SpanID.String(), suppressedChild.parent,
 		"a manual SDK span inside suppressed instrumentation should still inherit OBI context")
+
+	// The agent context returns to the manual parent after both instrumentations
+	// have exited.
+	require.Equal(t, parent.span, restored.span, "agent context must be restored after both instrumentations exit")
 
 	// Let the OTel logging exporter flush on JVM shutdown; OBI spans should not
 	// appear in the application's exporter output.

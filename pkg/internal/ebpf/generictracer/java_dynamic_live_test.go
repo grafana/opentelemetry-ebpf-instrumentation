@@ -121,12 +121,8 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 		require.NoError(t, err)
 		probes = append(probes, probe)
 	}
-	_, err = io.WriteString(input, "CALL\n")
-	require.NoError(t, err)
-	require.Equal(t, "42", scanJavaInt(t, scanner), "outer must return before task release")
-	_, err = io.WriteString(input, "RELEASE\n")
-	require.NoError(t, err)
-	require.Equal(t, "43", scanJavaInt(t, scanner))
+	sendJavaCommandExpectInt(t, input, scanner, "CALL", "42", "outer must return before task release")
+	sendJavaCommandExpectInt(t, input, scanner, "RELEASE", "43", "task result")
 	received := map[string]request.Span{}
 	var client request.Span
 	deadline := time.After(10 * time.Second)
@@ -147,12 +143,7 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 	}
 	outer, inner := received["outer"], received["inner"]
 	t.Logf("observed IDs: outer trace=%s span=%s parent=%s; inner trace=%s span=%s parent=%s; client trace=%s span=%s parent=%s", outer.TraceID, outer.SpanID, outer.ParentSpanID, inner.TraceID, inner.SpanID, inner.ParentSpanID, client.TraceID, client.SpanID, client.ParentSpanID)
-	require.Equal(t, traceID, outer.TraceID)
-	require.Equal(t, serverID, outer.ParentSpanID)
-	require.Equal(t, outer.TraceID, inner.TraceID)
-	require.Equal(t, outer.SpanID, inner.ParentSpanID)
-	require.Equal(t, inner.TraceID, client.TraceID)
-	require.Equal(t, inner.SpanID, client.ParentSpanID, "automatic client must inherit the innermost Java method")
+	requireSpanParentChain(t, traceID, serverID, outer, inner, client)
 	require.Equal(t, "42", outer.CustomSpan.Attrs["arg0"])
 	require.Equal(t, "hello", outer.CustomSpan.Attrs["arg1"])
 	require.Equal(t, "42", outer.CustomSpan.Attrs["return0"])
@@ -164,12 +155,8 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 		var value uint64
 		require.ErrorIs(t, tracer.bpfObjects.ObiDynamicInvocations.Lookup(uint64(i+1), &value), ebpf.ErrKeyNotExist)
 	}
-	_, err = io.WriteString(input, "CALL\n")
-	require.NoError(t, err)
-	require.Equal(t, "42", scanJavaInt(t, scanner))
-	_, err = io.WriteString(input, "RELEASE\n")
-	require.NoError(t, err)
-	require.Equal(t, "43", scanJavaInt(t, scanner))
+	sendJavaCommandExpectInt(t, input, scanner, "CALL", "42", "outer must return before task release")
+	sendJavaCommandExpectInt(t, input, scanner, "RELEASE", "43", "task result")
 	select {
 	case batch := <-spans:
 		for _, span := range batch {
@@ -198,12 +185,8 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 		require.NoError(t, err)
 		innerProbe, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: scenario.innerName, On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget." + scenario.innerName}}, 4, scenario.innerName, 1)
 		require.NoError(t, err)
-		_, err = io.WriteString(input, scenario.command+"\n")
-		require.NoError(t, err)
-		require.Equal(t, "42", scanJavaInt(t, scanner), scenario.outerName+" must return before worker release")
-		_, err = io.WriteString(input, scenario.release+"\n")
-		require.NoError(t, err)
-		require.Equal(t, "43", scanJavaInt(t, scanner))
+		sendJavaCommandExpectInt(t, input, scanner, scenario.command, "42", scenario.outerName+" must return before worker release")
+		sendJavaCommandExpectInt(t, input, scanner, scenario.release, "43", "worker result")
 
 		found := map[string]request.Span{}
 		var nestedClient request.Span
@@ -424,12 +407,8 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 	require.NoError(t, err)
 	nestedChild, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: "innerNestedChild", On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget.innerNestedChild"}}, 17, "innerNestedChild", 1)
 	require.NoError(t, err)
-	_, err = io.WriteString(input, "CALL_NESTED_TASK\n")
-	require.NoError(t, err)
-	require.Equal(t, "42", scanJavaInt(t, scanner), "nested submitter return marker")
-	_, err = io.WriteString(input, "RELEASE_NESTED_TASK\n")
-	require.NoError(t, err)
-	require.Equal(t, "43", scanJavaInt(t, scanner), "nested task result marker")
+	sendJavaCommandExpectInt(t, input, scanner, "CALL_NESTED_TASK", "42", "nested submitter return marker")
+	sendJavaCommandExpectInt(t, input, scanner, "RELEASE_NESTED_TASK", "43", "nested task result marker")
 	nestedSpans := map[string]request.Span{}
 	var nestedClient request.Span
 	nestedDeadline := time.After(10 * time.Second)
@@ -448,10 +427,12 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 			t.Fatalf("timed out waiting for nested-task spans: %+v", nestedSpans)
 		}
 	}
-	require.Equal(t, serverID, nestedSpans["outerNestedTask"].ParentSpanID)
-	require.Equal(t, nestedSpans["outerNestedTask"].SpanID, nestedSpans["innerNestedTask"].ParentSpanID)
-	require.Equal(t, nestedSpans["innerNestedTask"].SpanID, nestedSpans["innerNestedChild"].ParentSpanID)
-	require.Equal(t, nestedSpans["innerNestedChild"].SpanID, nestedClient.ParentSpanID)
+	requireSpanParentChain(t, traceID, serverID,
+		nestedSpans["outerNestedTask"],
+		nestedSpans["innerNestedTask"],
+		nestedSpans["innerNestedChild"],
+		nestedClient,
+	)
 	for i, probe := range []io.Closer{nestedOuter, nestedInner, nestedChild} {
 		count, err := probe.(interface{ Invocations() (uint64, error) }).Invocations()
 		require.NoError(t, err)
@@ -718,6 +699,27 @@ func scanJavaInt(t *testing.T, scanner *bufio.Scanner) string {
 	require.NoError(t, scanner.Err())
 	t.Fatal("Java process exited without printing the expected integer")
 	return ""
+}
+
+// sendJavaCommandExpectInt makes the fixture's command/reply handshake explicit
+// at each call site without hiding the command ordering from the test.
+func sendJavaCommandExpectInt(t *testing.T, input io.Writer, scanner *bufio.Scanner, command, want, message string) {
+	t.Helper()
+	_, err := fmt.Fprintln(input, command)
+	require.NoError(t, err)
+	require.Equal(t, want, scanJavaInt(t, scanner), message)
+}
+
+// requireSpanParentChain asserts that each span continues the trace and is a
+// child of the preceding span. The first parent is supplied separately (for
+// example, the automatic server span).
+func requireSpanParentChain(t *testing.T, traceID trace.TraceID, parent trace.SpanID, spans ...request.Span) {
+	t.Helper()
+	for _, span := range spans {
+		require.Equalf(t, traceID, span.TraceID, "span %q should continue the expected trace", span.Method)
+		require.Equalf(t, parent, span.ParentSpanID, "span %q should be a child of the preceding span", span.Method)
+		parent = span.SpanID
+	}
 }
 
 func scanJavaPrefix(t *testing.T, scanner *bufio.Scanner, prefix string) string {
