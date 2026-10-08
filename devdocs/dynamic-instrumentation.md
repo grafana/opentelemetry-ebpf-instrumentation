@@ -374,6 +374,29 @@ through. Sampling and explicit user filters still apply. Work scheduled
 asynchronously needs the application's or Java agent's normal context propagation;
 explicit SDK parents and new roots retain their SDK semantics.
 
+### Async context and sampling behavior
+
+For supported executor and fork/join tasks, the Java agent reports task capture,
+start, completion, and cancellation to OBI over ioctl. OBI's eBPF maps associate
+the task with the active dynamic span, install that context while the task runs,
+and restore the worker's prior context on exit. This carries OBI span parentage;
+it does not by itself propagate the Java SDK's `Context` or `Span.current()`, which
+continues to depend on application or framework context propagation. Cleanup
+removes task state on completion or cancellation. This mechanism has been tested
+with executor/fork-join and virtual-thread scenarios, plus one Reactor
+`publishOn(Schedulers.parallel())` path; it is not a guarantee for arbitrary
+async frameworks or operators.
+
+Dynamic Java spans are diagnostic spans produced by OBI, not SDK spans. In the
+tested cases, an SDK sampler that drops its parent span does not prevent OBI from
+emitting the dynamic span (with the parent's unsampled trace flag), and
+`InstrumentationUtil.suppressInstrumentation` suppresses the Java agent's own
+instrumentation without suppressing OBI's dynamic span. This separation is useful
+for troubleshooting. The OBI span still uses OBI's own trace pipeline and its
+sampling, filters, and export settings; it is not a promise to bypass those
+controls. Whether dynamic instrumentation should have any broader exception to
+sampling or suppression policy remains a design discussion.
+
 When no SDK context is active, OBI can supply its current server context through
 the ioctl buffer. That fallback requires `CAP_SYS_ADMIN` and a kernel permitting
 `bpf_probe_write_user`. SDK parenting itself uses Java context scopes and does not
