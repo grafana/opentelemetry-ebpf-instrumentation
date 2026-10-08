@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
@@ -456,6 +457,204 @@ func TestJavaDynamicSpansLive(t *testing.T) {
 		var value uint64
 		require.ErrorIs(t, tracer.bpfObjects.ObiDynamicInvocations.Lookup(uint64(i+15), &value), ebpf.ErrKeyNotExist)
 	}
+
+	virtualProbe, err := target.AttachLiveSpan(pid, fi.Ns(), &config.CustomSpanSpec{Name: "outerVirtualThread", On: config.CustomSpanTarget{FunctionSpan: "DynamicTarget.outerVirtualThread"}}, 18, "outerVirtualThread", 1)
+	require.NoError(t, err)
+	_, err = io.WriteString(input, "CALL_VIRTUAL\n")
+	require.NoError(t, err)
+	require.Equal(t, "43", scanJavaInt(t, scanner), "virtual-thread dynamic method return")
+	var virtualSpan, virtualClient request.Span
+	virtualDeadline := time.After(10 * time.Second)
+	for !virtualSpan.SpanID.IsValid() || !virtualClient.SpanID.IsValid() {
+		select {
+		case batch := <-spans:
+			for _, span := range batch {
+				if span.Type == request.EventTypeCustomSpan && span.Method == "outerVirtualThread" {
+					virtualSpan = span
+				}
+				if span.Type == request.EventTypeHTTPClient {
+					virtualClient = span
+				}
+			}
+		case <-virtualDeadline:
+			t.Fatalf("timed out waiting for virtual-thread spans: dynamic=%+v client=%+v", virtualSpan, virtualClient)
+		}
+	}
+	t.Logf("virtual-thread dynamic span=%s parent=%s; client span=%s parent=%s", virtualSpan.SpanID, virtualSpan.ParentSpanID, virtualClient.SpanID, virtualClient.ParentSpanID)
+	require.Equal(t, virtualSpan.TraceID, virtualClient.TraceID)
+	require.Equal(t, virtualSpan.SpanID, virtualClient.ParentSpanID, "client request on a virtual thread must inherit the active dynamic span")
+	virtualInvocations, err := virtualProbe.(interface{ Invocations() (uint64, error) }).Invocations()
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), virtualInvocations)
+	require.NoError(t, virtualProbe.Close())
+	var virtualCookie uint64
+	require.ErrorIs(t, tracer.bpfObjects.ObiDynamicInvocations.Lookup(uint64(18), &virtualCookie), ebpf.ErrKeyNotExist)
+	require.Eventually(t, func() bool {
+		iterator := tracer.bpfObjects.JavaVtThreads.Iterate()
+		var key BpfPidKeyT
+		var virtualID uint64
+		for iterator.Next(&key, &virtualID) {
+			if key.Pid == uint32(pid) && key.Ns == fi.Ns() {
+				return false
+			}
+		}
+		return iterator.Err() == nil
+	}, time.Second, 10*time.Millisecond, "virtual-thread mount mapping must be removed after unmount")
+}
+
+func TestJavaDynamicMapCapacityLive(t *testing.T) {
+	require.Equal(t, 0, os.Geteuid())
+	require.NoError(t, rlimit.RemoveMemlock())
+	cfg := obi.DefaultConfig
+	filters := ebpfcommon.NewPIDsFilter(&cfg.Discovery, slog.Default(), imetrics.NoopReporter{})
+	tracer := New(filters, &cfg, imetrics.NoopReporter{})
+	events := ebpfcommon.NewEBPFEventContext()
+	events.CommonPIDsFilter = filters
+	pt := obiebpf.NewProcessTracer(obiebpf.Generic, []obiebpf.Tracer{tracer}, &cfg, imetrics.NoopReporter{})
+	require.NoError(t, pt.Init(events, &cfg))
+	t.Cleanup(func() { require.NoError(t, pt.Close()) })
+
+	contextValue := BpfJavaDynamicContext{Cookie: 1}
+	spanMap := tracer.bpfObjects.JavaDynamicSpans
+	spanLimit := int(spanMap.MaxEntries())
+	spanKeys := make([]BpfTraceKeyT, spanLimit+1)
+	for i := range spanKeys {
+		spanKeys[i] = BpfTraceKeyT{ExtraId: 0xfedcba9876543210, P_key: BpfPidKeyT{Tid: uint32(i + 1), Pid: 0x7fffffff, Ns: 0x7ffffffe}}
+	}
+	t.Cleanup(func() {
+		for _, key := range spanKeys {
+			_ = spanMap.Delete(&key)
+		}
+	})
+	started := time.Now()
+	for i, key := range spanKeys {
+		require.NoError(t, spanMap.Update(&key, &contextValue, ebpf.UpdateAny), "span entry %d", i)
+	}
+	spanElapsed := time.Since(started)
+	spanIteratorCount := countJavaDynamicMapEntries[BpfTraceKeyT, BpfJavaDynamicContext](t, spanMap)
+	spanCount := countPresentJavaDynamicMapEntries[BpfTraceKeyT, BpfJavaDynamicContext](t, spanMap, spanKeys)
+	require.LessOrEqual(t, spanCount, spanLimit)
+	var span BpfJavaDynamicContext
+	require.ErrorIs(t, spanMap.Lookup(&spanKeys[0], &span), ebpf.ErrKeyNotExist, "LRU span map should evict its oldest entry")
+	require.NoError(t, spanMap.Lookup(&spanKeys[len(spanKeys)-1], &span))
+	t.Logf("java_dynamic_spans: max_entries=%d present_test_keys=%d iterator_count=%d updates=%d elapsed=%s", spanLimit, spanCount, spanIteratorCount, len(spanKeys), spanElapsed)
+
+	taskMap := tracer.bpfObjects.JavaDynamicTaskContexts
+	taskLimit := int(taskMap.MaxEntries())
+	taskKeys := make([]BpfJavaDynamicTaskKey, taskLimit+1)
+	for i := range taskKeys {
+		taskKeys[i] = BpfJavaDynamicTaskKey{Pid: 0x7ffffffd, TaskId: uint64(i + 1)}
+	}
+	t.Cleanup(func() {
+		for _, key := range taskKeys {
+			_ = taskMap.Delete(&key)
+		}
+	})
+	started = time.Now()
+	for i, key := range taskKeys {
+		require.NoError(t, taskMap.Update(&key, &contextValue, ebpf.UpdateAny), "task context entry %d", i)
+	}
+	taskElapsed := time.Since(started)
+	taskIteratorCount := countJavaDynamicMapEntries[BpfJavaDynamicTaskKey, BpfJavaDynamicContext](t, taskMap)
+	taskCount := countPresentJavaDynamicMapEntries[BpfJavaDynamicTaskKey, BpfJavaDynamicContext](t, taskMap, taskKeys)
+	require.LessOrEqual(t, taskCount, taskLimit)
+	require.ErrorIs(t, taskMap.Lookup(&taskKeys[0], &span), ebpf.ErrKeyNotExist, "LRU task-context map should evict its oldest entry")
+	require.NoError(t, taskMap.Lookup(&taskKeys[len(taskKeys)-1], &span))
+	t.Logf("java_dynamic_task_contexts: max_entries=%d present_test_keys=%d iterator_count=%d updates=%d elapsed=%s", taskLimit, taskCount, taskIteratorCount, len(taskKeys), taskElapsed)
+
+	scopeMap := tracer.bpfObjects.JavaDynamicTaskScopes
+	scopeLimit := int(scopeMap.MaxEntries())
+	scopeInitial := countJavaDynamicMapEntries[uint64, BpfJavaDynamicTaskScopeState](t, scopeMap)
+	require.LessOrEqual(t, scopeInitial, scopeLimit)
+	scopeInsertions := scopeLimit - scopeInitial
+	scopeKeys := make([]uint64, scopeInsertions+1)
+	for i := range scopeKeys {
+		scopeKeys[i] = 0xf000000000000000 + uint64(i)
+	}
+	t.Cleanup(func() {
+		for _, key := range scopeKeys {
+			_ = scopeMap.Delete(&key)
+		}
+	})
+	scopeValue := BpfJavaDynamicTaskScopeState{Depth: 1}
+	started = time.Now()
+	for i, key := range scopeKeys[:scopeInsertions] {
+		require.NoError(t, scopeMap.Update(&key, &scopeValue, ebpf.UpdateAny), "task scope entry %d", i)
+	}
+	scopeElapsed := time.Since(started)
+	scopeCount := countJavaDynamicMapEntries[uint64, BpfJavaDynamicTaskScopeState](t, scopeMap)
+	require.Equal(t, scopeLimit, scopeCount)
+	err := scopeMap.Update(&scopeKeys[scopeInsertions], &scopeValue, ebpf.UpdateAny)
+	require.Error(t, err, "non-LRU task-scope map should reject an entry at capacity")
+	var state BpfJavaDynamicTaskScopeState
+	require.ErrorIs(t, scopeMap.Lookup(&scopeKeys[scopeInsertions], &state), ebpf.ErrKeyNotExist)
+	t.Logf("java_dynamic_task_scopes: max_entries=%d initial=%d occupancy=%d updates=%d elapsed=%s; extra insert rejected: %v", scopeLimit, scopeInitial, scopeCount, scopeInsertions, scopeElapsed, err)
+
+	backupMap := tracer.bpfObjects.JavaDynamicTaskBackups
+	backupLimit := int(backupMap.MaxEntries())
+	backupInitial := countJavaDynamicMapEntries[BpfJavaDynamicTaskScopeKey, BpfJavaDynamicTaskScopeFrame](t, backupMap)
+	require.LessOrEqual(t, backupInitial, backupLimit)
+	backupInsertions := backupLimit - backupInitial
+	backupKeys := make([]BpfJavaDynamicTaskScopeKey, backupInsertions+1)
+	for i := range backupKeys {
+		backupKeys[i] = BpfJavaDynamicTaskScopeKey{PidTgid: 0xe000000000000000 + uint64(i), Depth: 1}
+	}
+	t.Cleanup(func() {
+		for _, key := range backupKeys {
+			_ = backupMap.Delete(&key)
+		}
+	})
+	frame := BpfJavaDynamicTaskScopeFrame{Captured: 1, Previous: contextValue}
+	started = time.Now()
+	for i, key := range backupKeys[:backupInsertions] {
+		require.NoError(t, backupMap.Update(&key, &frame, ebpf.UpdateAny), "task backup entry %d", i)
+	}
+	backupElapsed := time.Since(started)
+	backupCount := countJavaDynamicMapEntries[BpfJavaDynamicTaskScopeKey, BpfJavaDynamicTaskScopeFrame](t, backupMap)
+	require.Equal(t, backupLimit, backupCount)
+	err = backupMap.Update(&backupKeys[backupInsertions], &frame, ebpf.UpdateAny)
+	require.Error(t, err, "non-LRU task-backup map should reject an entry at capacity")
+	require.ErrorIs(t, backupMap.Lookup(&backupKeys[backupInsertions], &frame), ebpf.ErrKeyNotExist)
+	t.Logf("java_dynamic_task_backups: max_entries=%d initial=%d occupancy=%d updates=%d elapsed=%s; extra insert rejected: %v", backupLimit, backupInitial, backupCount, backupInsertions, backupElapsed, err)
+
+	spanBytes := uint64(spanLimit) * uint64(unsafe.Sizeof(BpfTraceKeyT{}))
+	spanBytes += uint64(spanLimit) * uint64(unsafe.Sizeof(BpfJavaDynamicContext{}))
+	taskBytes := uint64(taskLimit) * uint64(unsafe.Sizeof(BpfJavaDynamicTaskKey{}))
+	taskBytes += uint64(taskLimit) * uint64(unsafe.Sizeof(BpfJavaDynamicContext{}))
+	scopeBytes := uint64(scopeLimit) * uint64(unsafe.Sizeof(uint64(0)))
+	scopeBytes += uint64(scopeLimit) * uint64(unsafe.Sizeof(BpfJavaDynamicTaskScopeState{}))
+	backupBytes := uint64(backupLimit) * uint64(unsafe.Sizeof(BpfJavaDynamicTaskScopeKey{}))
+	backupBytes += uint64(backupLimit) * uint64(unsafe.Sizeof(BpfJavaDynamicTaskScopeFrame{}))
+	maxPayload := spanBytes + taskBytes + scopeBytes + backupBytes
+	t.Logf("dynamic map fixed key/value payload at max_entries: spans=%d B task_contexts=%d B task_scopes=%d B task_backups=%d B total=%d B (%.3f MiB; excludes kernel hash/LRU metadata, allocator rounding, and other OBI maps)", spanBytes, taskBytes, scopeBytes, backupBytes, maxPayload, float64(maxPayload)/(1024*1024))
+}
+
+func countJavaDynamicMapEntries[K, V any](t *testing.T, bpfMap *ebpf.Map) int {
+	t.Helper()
+	iterator := bpfMap.Iterate()
+	var key K
+	var value V
+	count := 0
+	for iterator.Next(&key, &value) {
+		count++
+	}
+	require.NoError(t, iterator.Err())
+	return count
+}
+
+func countPresentJavaDynamicMapEntries[K, V any](t *testing.T, bpfMap *ebpf.Map, keys []K) int {
+	t.Helper()
+	var value V
+	count := 0
+	for _, key := range keys {
+		err := bpfMap.Lookup(&key, &value)
+		if err == nil {
+			count++
+		} else {
+			require.ErrorIs(t, err, ebpf.ErrKeyNotExist)
+		}
+	}
+	return count
 }
 
 func scanJavaInt(t *testing.T, scanner *bufio.Scanner) string {
@@ -607,6 +806,7 @@ public class DynamicTarget {
   return nestedExecutor.submit(() -> innerNestedChild(x)).get();
  }
  public static int innerNestedChild(int x) throws Exception { request(); return x + 1; }
+ public static int outerVirtualThread(int x) throws Exception { request(); return x + 1; }
  private static void request() throws Exception {
   try (Socket socket = new Socket("127.0.0.1", port)) {
    socket.getOutputStream().write("GET /nested HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
@@ -638,6 +838,11 @@ public class DynamicTarget {
    else if (line.equals("CALL_FORKJOIN_SUBMIT")) System.out.println(outerForkJoinSubmit(42));
    else if (line.equals("RELEASE_FORKJOIN_SUBMIT")) { forkJoinSubmitRelease.countDown(); System.out.println(pendingForkJoin.join()); }
    else if (line.equals("CALL_NESTED_TASK")) System.out.println(outerNestedTask(42));
+   else if (line.equals("CALL_VIRTUAL")) {
+    FutureTask<Integer> task = new FutureTask<>(() -> outerVirtualThread(42));
+    Thread.startVirtualThread(task);
+    System.out.println(task.get());
+   }
    else if (line.equals("RELEASE_NESTED_TASK")) System.out.println(pendingNested.get());
   }
  }
