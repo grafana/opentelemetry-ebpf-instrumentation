@@ -9,6 +9,13 @@
 #include <common/trace_parent.h>
 #include <shared/custom_span.h>
 
+enum {
+    k_ioctl_java_dynamic_task_capture = 11,
+    k_ioctl_java_dynamic_task_enter = 12,
+    k_ioctl_java_dynamic_task_exit = 13,
+    k_ioctl_java_dynamic_task_cancel = 14,
+};
+
 struct java_dynamic_packet {
     u8 operation;
     u8 flags;
@@ -42,6 +49,104 @@ struct java_dynamic_ready {
 };
 
 SCRATCH_MEM_TYPED(java_dynamic_packet, struct java_dynamic_packet);
+
+static __always_inline void java_dynamic_task_op(const u8 op, const unsigned char *user, u64 id) {
+    u64 task_id = 0;
+    if (bpf_probe_read_user(&task_id, sizeof(task_id), user + 1) != 0) {
+        return;
+    }
+    struct java_dynamic_task_key task_key = {
+        .pid = pid_from_pid_tgid(id),
+        .task_id = task_id,
+    };
+    if (op == k_ioctl_java_dynamic_task_cancel) {
+        bpf_map_delete_elem(&java_dynamic_task_contexts, &task_key);
+        return;
+    }
+    if (op == k_ioctl_java_dynamic_task_capture) {
+        trace_key_t key = {};
+        trace_key_from_pid_tid(&key);
+        struct java_dynamic_context *current = bpf_map_lookup_elem(&java_dynamic_spans, &key);
+        if (current) {
+            bpf_map_update_elem(&java_dynamic_task_contexts, &task_key, current, BPF_ANY);
+        } else {
+            bpf_map_delete_elem(&java_dynamic_task_contexts, &task_key);
+        }
+        return;
+    }
+
+    if (op == k_ioctl_java_dynamic_task_enter) {
+        struct java_dynamic_task_scope_state *scopes =
+            bpf_map_lookup_elem(&java_dynamic_task_scopes, &id);
+        if (!scopes) {
+            struct java_dynamic_task_scope_state empty = {};
+            if (bpf_map_update_elem(&java_dynamic_task_scopes, &id, &empty, BPF_NOEXIST) != 0) {
+                return;
+            }
+            scopes = bpf_map_lookup_elem(&java_dynamic_task_scopes, &id);
+            if (!scopes) {
+                return;
+            }
+        }
+        if (scopes->overflow_depth > 0 || scopes->depth >= k_java_dynamic_task_scope_max_depth) {
+            scopes->overflow_depth++;
+            return;
+        }
+
+        trace_key_t key = {};
+        trace_key_from_pid_tid(&key);
+        struct java_dynamic_task_scope_key scope_key = {.pid_tgid = id, .depth = scopes->depth};
+        struct java_dynamic_task_scope_frame frame = {};
+        struct java_dynamic_context *previous = bpf_map_lookup_elem(&java_dynamic_spans, &key);
+        if (previous) {
+            frame.had_previous = 1;
+            frame.previous = *previous;
+        }
+        struct java_dynamic_context *captured =
+            bpf_map_lookup_elem(&java_dynamic_task_contexts, &task_key);
+        frame.captured = captured != NULL;
+        if (bpf_map_update_elem(&java_dynamic_task_backups, &scope_key, &frame, BPF_ANY) != 0) {
+            scopes->depth++;
+            return;
+        }
+        if (captured) {
+            bpf_map_update_elem(&java_dynamic_spans, &key, captured, BPF_ANY);
+        }
+        scopes->depth++;
+        bpf_map_delete_elem(&java_dynamic_task_contexts, &task_key);
+        return;
+    }
+
+    struct java_dynamic_task_scope_state *scopes =
+        bpf_map_lookup_elem(&java_dynamic_task_scopes, &id);
+    if (scopes) {
+        if (scopes->overflow_depth > 0) {
+            scopes->overflow_depth--;
+        } else if (scopes->depth > 0) {
+            struct java_dynamic_task_scope_key scope_key = {.pid_tgid = id,
+                                                            .depth = scopes->depth - 1};
+            struct java_dynamic_task_scope_frame *frame =
+                bpf_map_lookup_elem(&java_dynamic_task_backups, &scope_key);
+            if (frame) {
+                if (frame->had_previous) {
+                    trace_key_t key = {};
+                    trace_key_from_pid_tid(&key);
+                    bpf_map_update_elem(&java_dynamic_spans, &key, &frame->previous, BPF_ANY);
+                } else if (frame->captured) {
+                    trace_key_t key = {};
+                    trace_key_from_pid_tid(&key);
+                    bpf_map_delete_elem(&java_dynamic_spans, &key);
+                }
+            }
+            bpf_map_delete_elem(&java_dynamic_task_backups, &scope_key);
+            scopes->depth--;
+        }
+        if (scopes->depth == 0 && scopes->overflow_depth == 0) {
+            bpf_map_delete_elem(&java_dynamic_task_scopes, &id);
+        }
+    }
+    bpf_map_delete_elem(&java_dynamic_task_contexts, &task_key);
+}
 
 static __always_inline void java_dynamic_ready_event(const unsigned char *packet, u64 pid_tgid) {
     struct java_dynamic_ready *event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);

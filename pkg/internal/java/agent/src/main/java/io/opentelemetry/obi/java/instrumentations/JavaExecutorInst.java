@@ -116,6 +116,7 @@ public class JavaExecutorInst {
       if (SSLStorage.isJdkHttpClientTask(task)) {
         return;
       }
+      ThreadInfo.captureDynamicTaskContext(task);
       long threadId = Agent.NativeLib.gettid();
       if (SSLStorage.isUnscopedJdkHttpClientSelectorThread()) {
         return;
@@ -154,6 +155,7 @@ public class JavaExecutorInst {
         @Advice.Argument(0) Runnable task, @Advice.Thrown Throwable throwable) {
       if (throwable != null) {
         SSLStorage.untrackTask(task);
+        ThreadInfo.cancelDynamicTaskContext(task);
       }
     }
   }
@@ -167,6 +169,7 @@ public class JavaExecutorInst {
       if (ThreadInfo.loomTaskOrVirtualThread(task)) {
         return;
       }
+      ThreadInfo.captureDynamicTaskContext(task);
       if (SSLStorage.bootDebugOn().equals(true)) {
         System.err.println(
             "[SetJavaForkJoinStateAdvice] ("
@@ -183,6 +186,7 @@ public class JavaExecutorInst {
         @Advice.Argument(0) ForkJoinTask<?> task, @Advice.Thrown Throwable throwable) {
       if (throwable != null) {
         SSLStorage.untrackTask(task);
+        ThreadInfo.cancelDynamicTaskContext(task);
       }
     }
   }
@@ -190,12 +194,17 @@ public class JavaExecutorInst {
   @SuppressWarnings("unused")
   public static class SetSubmitRunnableStateAdvice {
     @Advice.OnMethodEnter(suppress = Throwable.class)
-    public static void enterJobSubmit(@Advice.Argument(value = 0, readOnly = false) Runnable task) {
+    public static void enterJobSubmit(
+        @Advice.Argument(value = 0, readOnly = false) Runnable task,
+        @Advice.Origin("#m") String methodName) {
       // see SetExecuteRunnableStateAdvice, same reasoning; onVirtualThread
       // also covers the timed-park timeout lambda that a parking VT
       // schedules on the unparker.
       if (ThreadInfo.loomTaskOrVirtualThread(task)) {
         return;
+      }
+      if ("schedule".equals(methodName)) {
+        task = ThreadInfo.wrapScheduledRunnable(task);
       }
       if (SSLStorage.bootDebugOn().equals(true)) {
         System.err.println(
@@ -209,9 +218,13 @@ public class JavaExecutorInst {
     public static void exitJobSubmit(
         @Advice.Argument(0) Runnable task,
         @Advice.Thrown Throwable throwable,
-        @Advice.Return Future<?> future) {
+        @Advice.Return Future<?> future,
+        @Advice.Origin("#m") String methodName) {
       if (throwable != null) {
         SSLStorage.untrackTask(task);
+        ThreadInfo.cancelDynamicTaskContext(task);
+      } else if ("schedule".equals(methodName)) {
+        ThreadInfo.associateScheduledTask(future, task);
       }
     }
   }
@@ -220,10 +233,15 @@ public class JavaExecutorInst {
   public static class SetCallableStateAdvice {
     @Advice.OnMethodEnter(suppress = Throwable.class)
     public static void enterJobSubmit(
-        @Advice.Argument(0) Callable<?> task, @Advice.Origin String method) {
+        @Advice.Argument(value = 0, readOnly = false) Callable<?> task,
+        @Advice.Origin String method,
+        @Advice.Origin("#m") String methodName) {
       // see SetExecuteRunnableStateAdvice, same reasoning
       if (ThreadInfo.loomTaskOrVirtualThread(task)) {
         return;
+      }
+      if ("schedule".equals(methodName)) {
+        task = ThreadInfo.wrapScheduledCallable(task);
       }
       long threadId = Agent.NativeLib.gettid();
       Long parentId = SSLStorage.parentThreadId(task);
@@ -250,9 +268,16 @@ public class JavaExecutorInst {
     public static void exitJobSubmit(
         @Advice.Argument(0) Callable<?> task,
         @Advice.Thrown Throwable throwable,
-        @Advice.Return Future<?> future) {
+        @Advice.Return Future<?> future,
+        @Advice.Origin("#m") String methodName) {
       if (throwable != null) {
         SSLStorage.untrackTask(task);
+        ThreadInfo.cancelDynamicTaskContext(task);
+      } else if ("schedule".equals(methodName) && future != null) {
+        // ScheduledThreadPoolExecutor queues a wrapper instead of calling
+        // execute(). Capture that returned wrapper for Runnable.run advice.
+        ThreadInfo.captureDynamicTaskContext(future);
+        ThreadInfo.associateScheduledTask(future, task);
       }
 
       try {
@@ -272,6 +297,14 @@ public class JavaExecutorInst {
           t.printStackTrace();
         }
       }
+    }
+  }
+
+  @SuppressWarnings("unused")
+  public static final class CancelFutureContextAdvice {
+    @Advice.OnMethodEnter(suppress = Throwable.class)
+    public static void cancel(@Advice.This Future<?> future) {
+      ThreadInfo.cancelScheduledTaskContext(future);
     }
   }
 

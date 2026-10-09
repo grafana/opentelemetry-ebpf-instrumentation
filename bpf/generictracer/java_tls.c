@@ -118,6 +118,12 @@ int BPF_KPROBE_GUARDED(obi_kprobe_sys_ioctl) {
     case k_ioctl_java_dynamic_end:
         java_dynamic_span_event(uarg, id, false);
         return 0;
+    case k_ioctl_java_dynamic_task_capture:
+    case k_ioctl_java_dynamic_task_enter:
+    case k_ioctl_java_dynamic_task_exit:
+    case k_ioctl_java_dynamic_task_cancel:
+        java_dynamic_task_op(op_cmd, uarg, id);
+        return 0;
     case k_ioctl_java_vt_mount: {
         // The agent reports, on every VirtualThread.mount(), the logical
         // thread id now mounted on this carrier; the current kernel thread

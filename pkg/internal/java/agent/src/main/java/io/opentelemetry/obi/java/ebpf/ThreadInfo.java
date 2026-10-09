@@ -6,9 +6,163 @@
 package io.opentelemetry.obi.java.ebpf;
 
 import io.opentelemetry.obi.java.Agent;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Objects;
+import java.util.WeakHashMap;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 
 public class ThreadInfo {
+  private static final ThreadLocal<NativeMemory> DYNAMIC_TASK_PACKET = new ThreadLocal<>();
+  private static final Map<Future<?>, Object> SCHEDULED_TASKS =
+      Collections.synchronizedMap(new WeakHashMap<>());
+  private static volatile boolean dynamicTaskContextEnabled;
+
+  public static void enableDynamicTaskContext() {
+    dynamicTaskContextEnabled = true;
+  }
+
+  public static void captureDynamicTaskContext(Object task) {
+    emitDynamicTaskOp(OperationType.DYNAMIC_TASK_CAPTURE, task);
+  }
+
+  // Wrap scheduled Runnable tasks before the scheduler can dispatch them. A
+  // ScheduledThreadPoolExecutor may start its worker before schedule() returns,
+  // so capturing the returned ScheduledFuture is inherently racy.
+  public static Runnable wrapScheduledRunnable(Runnable task) {
+    if (!dynamicTaskContextEnabled || task == null || onVirtualThread() || loomTask(task)) {
+      return task;
+    }
+    DynamicTaskRunnable wrapped = new DynamicTaskRunnable(task);
+    captureDynamicTaskContext(wrapped);
+    return wrapped;
+  }
+
+  // ScheduledThreadPoolExecutor may start FutureTask.run() before schedule()
+  // returns and its exit advice can capture the returned Future. A Callable
+  // wrapper carries the submission-time context into call() without relying
+  // on that later Future capture.
+  public static <V> Callable<V> wrapScheduledCallable(Callable<V> task) {
+    if (!dynamicTaskContextEnabled || task == null || onVirtualThread() || loomTask(task)) {
+      return task;
+    }
+    DynamicTaskCallable<V> wrapped = new DynamicTaskCallable<>(task);
+    captureDynamicTaskContext(wrapped);
+    return wrapped;
+  }
+
+  public static boolean isDynamicTaskRunnable(Object task) {
+    return task instanceof DynamicTaskRunnable;
+  }
+
+  public static boolean isDynamicTaskCallable(Object task) {
+    return task instanceof DynamicTaskCallable;
+  }
+
+  public static final class DynamicTaskRunnable implements Runnable {
+    private final Runnable delegate;
+
+    private DynamicTaskRunnable(Runnable delegate) {
+      this.delegate = Objects.requireNonNull(delegate);
+    }
+
+    @Override
+    public void run() {
+      enterDynamicTaskContext(this);
+      try {
+        delegate.run();
+      } finally {
+        exitDynamicTaskContext(this);
+      }
+    }
+  }
+
+  public static final class DynamicTaskCallable<V> implements Callable<V> {
+    private final Callable<V> delegate;
+
+    private DynamicTaskCallable(Callable<V> delegate) {
+      this.delegate = Objects.requireNonNull(delegate);
+    }
+
+    @Override
+    public V call() throws Exception {
+      enterDynamicTaskContext(this);
+      try {
+        return delegate.call();
+      } finally {
+        exitDynamicTaskContext(this);
+      }
+    }
+  }
+
+  public static void enterDynamicTaskContext(Object task) {
+    emitDynamicTaskOp(OperationType.DYNAMIC_TASK_ENTER, task);
+  }
+
+  public static void exitDynamicTaskContext(Object task) {
+    emitDynamicTaskOp(OperationType.DYNAMIC_TASK_EXIT, task);
+  }
+
+  public static void cancelDynamicTaskContext(Object task) {
+    emitDynamicTaskOp(OperationType.DYNAMIC_TASK_CANCEL, task);
+  }
+
+  public static void associateScheduledTask(Future<?> future, Object task) {
+    if (future == null || task == null) {
+      return;
+    }
+    Object taskToCancel = null;
+    synchronized (SCHEDULED_TASKS) {
+      if (future.isDone()) {
+        taskToCancel = task;
+      } else {
+        SCHEDULED_TASKS.put(future, task);
+        // The scheduled task can win the race against schedule() returning.
+        if (future.isDone()) {
+          taskToCancel = SCHEDULED_TASKS.remove(future);
+        }
+      }
+    }
+    if (taskToCancel != null) {
+      cancelDynamicTaskContext(future);
+      cancelDynamicTaskContext(taskToCancel);
+    }
+  }
+
+  public static void cancelScheduledTaskContext(Future<?> future) {
+    Object task;
+    synchronized (SCHEDULED_TASKS) {
+      task = SCHEDULED_TASKS.remove(future);
+    }
+    cancelDynamicTaskContext(future);
+    cancelDynamicTaskContext(task);
+  }
+
+  public static void completeScheduledTaskContext(Future<?> future) {
+    Object task;
+    synchronized (SCHEDULED_TASKS) {
+      task = SCHEDULED_TASKS.remove(future);
+    }
+    cancelDynamicTaskContext(future);
+    cancelDynamicTaskContext(task);
+  }
+
+  private static void emitDynamicTaskOp(OperationType op, Object task) {
+    if (!dynamicTaskContextEnabled || task == null || onVirtualThread() || loomTask(task)) {
+      return;
+    }
+    NativeMemory packet = DYNAMIC_TASK_PACKET.get();
+    if (packet == null) {
+      packet = new NativeMemory(16);
+      DYNAMIC_TASK_PACKET.set(packet);
+    }
+    packet.setByte(0, op.code);
+    packet.setLong(1, TaskIdentityRegistry.idFor(task));
+    Agent.NativeLib.ioctl(0, Agent.IOCTL_CMD, packet.getAddress());
+  }
+
   public static int writeThreadContext(NativeMemory mem, int off, long parentId) {
     mem.setLong(off, parentId);
     off += Long.BYTES;

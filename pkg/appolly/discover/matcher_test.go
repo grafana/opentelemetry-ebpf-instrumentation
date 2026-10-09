@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/obi/pkg/appolly/app"
 	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
 	"go.opentelemetry.io/obi/pkg/appolly/services"
+	"go.opentelemetry.io/obi/pkg/config"
 	attr "go.opentelemetry.io/obi/pkg/export/attributes/names"
 	"go.opentelemetry.io/obi/pkg/internal/testutil"
 	"go.opentelemetry.io/obi/pkg/liveprober"
@@ -1134,4 +1135,41 @@ func TestDynamicRuleSelectsAlreadyObservedProcess(t *testing.T) {
 	require.Len(t, event.Obj.Criteria, 1)
 	_, matched = matcher.filterCreated(process)
 	require.False(t, matched, "reevaluation must not duplicate the resident tracer")
+}
+
+func TestDynamicRuleSelectsOnlyMatchingService(t *testing.T) {
+	original := processInfo
+	t.Cleanup(func() { processInfo = original })
+	processInfo = func(attrs ProcessAttrs) (*services.ProcessInfo, error) {
+		return &services.ProcessInfo{Pid: attrs.pid, ExePath: "/bin/checkout", OpenPorts: attrs.openPorts}, nil
+	}
+	manager := liveprober.New()
+	t.Cleanup(func() { require.NoError(t, manager.Close()) })
+	matcher := &Matcher{
+		Log: slog.Default(), Dynamic: manager, HasHostPidAccess: true,
+		candidates: map[app.PID]ProcessAttrs{}, ProcessHistory: map[app.PID]ProcessMatch{},
+	}
+	selected := ProcessAttrs{pid: 123, openPorts: []uint32{8180}}
+	unselected := ProcessAttrs{pid: 124, openPorts: []uint32{8090}}
+	for _, process := range []ProcessAttrs{selected, unselected} {
+		_, matched := matcher.filterCreated(process)
+		require.False(t, matched)
+	}
+	var dynamicConfig config.DynamicInstrumentationConfig
+	require.NoError(t, yaml.Unmarshal([]byte(`rules:
+  - service:
+      - open_ports: "8180"
+    spans:
+      - name: search
+        on:
+          function_span: "*ApiController.search*"
+`), &dynamicConfig))
+	require.NoError(t, manager.SetConfigRules(dynamicConfig.Rules))
+
+	event, matched := matcher.filterCreated(selected)
+	require.True(t, matched)
+	require.Equal(t, app.PID(123), event.Obj.Process.Pid)
+	require.Len(t, event.Obj.Criteria, 1)
+	_, matched = matcher.filterCreated(unselected)
+	require.False(t, matched, "a service rule must not select another service's process")
 }

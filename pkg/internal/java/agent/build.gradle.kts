@@ -51,6 +51,7 @@ dependencies {
     testImplementation("org.awaitility:awaitility:4.3.0")
     testImplementation("io.opentelemetry:opentelemetry-sdk:1.55.0")
     testImplementation("io.opentelemetry:opentelemetry-sdk-testing:1.55.0")
+    testImplementation("io.opentelemetry.instrumentation:opentelemetry-instrumentation-annotations:2.29.0")
 
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.14.4")
 }

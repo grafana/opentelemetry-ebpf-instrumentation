@@ -79,11 +79,21 @@ public final class DynamicProbeTarget {
       }
       check(outer(42, "hello") == 43, "detach changed return");
       check(outerId.equals(parentId), "deleted method still changes context");
+
+      attach.invoke(instrumenter, PREFIX + "outer", 99L);
+      attach.invoke(instrumenter, PREFIX + "outer", 100L);
+      detach.invoke(instrumenter, 99L);
+      check(outer(42, "hello") == 43, "replaced probe changed return");
+      check(!outerId.equals(parentId), "detaching replaced cookie removed active probe");
+      check(packet().getLong(8) == 100L, "replacement cookie not used");
+      detach.invoke(instrumenter, 100L);
+      outer(42, "hello");
+      check(outerId.equals(parentId), "detached replacement still changes context");
     } finally {
       server.end();
     }
     List<SpanData> spans = EXPORTER.getFinishedSpanItems();
-    check(spans.size() == 8, "custom span was also exported through SDK: " + spans.size());
+    check(spans.size() == 10, "unexpected SDK span count: " + spans.size());
     check(spans.get(0).getName().equals("child"), "SDK child missing");
     check(spans.get(0).getParentSpanId().equals(innerIdBeforeDetach), "SDK child parent mismatch");
     check(
