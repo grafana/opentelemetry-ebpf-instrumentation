@@ -57,12 +57,12 @@ map(select(
     or
     (
       (.error.DuplicateMetricName? // null) as $dupmetric
+      | (($dupmetric.provenances // []) | map(.path)) as $paths
       | $dupmetric != null
         and $dupmetric.metric_name == "dns.lookup.duration"
-        and (($dupmetric.provenances // []) | map(.path)) as $paths
-            | ($paths | length) == 2
-              and ($paths | any(. == "/obi-registry/groups/dns/metrics.yaml"))
-              and ($paths | any(startswith(".deps/") and endswith("/dns/metrics.yaml")))
+        and ($paths | length) == 2
+        and ($paths | any(. == "/obi-registry/groups/dns/metrics.yaml"))
+        and ($paths | any(startswith(".deps/") and endswith("/dns/metrics.yaml")))
     )
     or
     (
