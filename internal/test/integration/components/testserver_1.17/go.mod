@@ -1,6 +1,6 @@
 module go.opentelemetry.io/obi/internal/test/integration/components/testserver_1.17
 
-go 1.17
+go 1.25.0
 
 require (
 	github.com/caarlos0/env/v9 v9.0.0
@@ -30,7 +30,7 @@ require (
 	github.com/ugorji/go/codec v1.2.11 // indirect
 	golang.org/x/crypto v0.11.0 // indirect
 	golang.org/x/net v0.12.0 // indirect
-	golang.org/x/sys v0.12.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.11.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20230711160842-782d3b101e98 // indirect
 	gopkg.in/yaml.v2 v2.2.8 // indirect
