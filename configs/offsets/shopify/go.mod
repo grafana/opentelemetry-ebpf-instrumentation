@@ -1,6 +1,6 @@
 module go.opentelemetry.io/obi/configs/offsets/shopify
 
-go 1.25.11
+go 1.26.0
 
 require github.com/Shopify/sarama v1.37.1
 
@@ -21,6 +21,6 @@ require (
 	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.17 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20201227073835-cf1acfcdf475 // indirect
-	golang.org/x/crypto v0.45.0 // indirect
-	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
 )
