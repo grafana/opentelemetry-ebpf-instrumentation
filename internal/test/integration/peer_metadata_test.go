@@ -168,7 +168,7 @@ func testPeerMetadataAmbiguousCaller(t *testing.T, compose *docker.Compose) {
 	t.Cleanup(func() {
 		peerMetadataComposeCommand(t, compose, "rm", "--force", "--stop", "--volumes", "second-caller")
 	})
-	peerMetadataComposeCommand(t, compose, "up", "--detach", "--no-build", "second-caller")
+	peerMetadataComposeCommand(t, compose, "up", "--detach", "--no-build", "--no-deps", "second-caller")
 	testPeerMetadataCallers(t, compose, "ambiguous", []peer.Service{
 		{Name: "frontend", Namespace: "frontend-ns", ServiceGraph: true},
 		{Name: "second-caller", Namespace: "frontend-ns", ServiceGraph: true},
