@@ -1,6 +1,6 @@
 module go.opentelemetry.io/obi/internal/test/integration/components/old_grpc/worker
 
-go 1.25.11
+go 1.26.0
 
 require (
 	github.com/caarlos0/env/v7 v7.1.0
@@ -10,8 +10,8 @@ require (
 
 require (
 	github.com/golang/protobuf v1.5.3 // indirect
-	golang.org/x/net v0.12.0 // indirect
-	golang.org/x/sys v0.10.0 // indirect
-	golang.org/x/text v0.11.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/genproto v0.0.0-20230410155749-daa745c078e1 // indirect
 )
