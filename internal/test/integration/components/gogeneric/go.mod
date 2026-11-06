@@ -10,7 +10,7 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.2.1 // indirect
+	github.com/andybalholm/brotli v1.2.7 // indirect
 	github.com/google/uuid v1.5.0 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
