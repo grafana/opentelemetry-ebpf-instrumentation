@@ -101,6 +101,7 @@ type Manager struct {
 	matches        map[int]ProcessMatcher
 	services       map[int]svc.UID
 	dynamic        map[dynamicKey]*dynamicAttachment
+	patches        map[patchKey]*patchAttachment
 	suppressed     map[dynamicKey]bool
 	changed        chan struct{}
 	updated        chan struct{}
@@ -121,7 +122,7 @@ func New() *Manager {
 	return &Manager{
 		metrics: imetrics.NoopReporter{},
 		rules:   map[string]ruleState{}, matches: map[int]ProcessMatcher{}, services: map[int]svc.UID{},
-		dynamic: map[dynamicKey]*dynamicAttachment{}, suppressed: map[dynamicKey]bool{},
+		dynamic: map[dynamicKey]*dynamicAttachment{}, patches: map[patchKey]*patchAttachment{}, suppressed: map[dynamicKey]bool{},
 		changed: make(chan struct{}, 1), updated: make(chan struct{}), maxProbes: 1024, requestTimeout: 10 * time.Second,
 
 		targets:        make(map[int]target),
@@ -169,6 +170,11 @@ func (m *Manager) detachTargetLocked(pid int, status string) {
 	for key := range m.dynamic {
 		if key.pid == pid {
 			_ = m.removeDynamicLocked(key)
+		}
+	}
+	for key := range m.patches {
+		if key.pid == pid {
+			_ = m.removePatchLocked(key)
 		}
 	}
 	for _, a := range m.probes {

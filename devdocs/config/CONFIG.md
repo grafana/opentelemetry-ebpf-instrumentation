@@ -684,6 +684,7 @@ Buckets defines the histograms bucket boundaries, and allows users to redefine t
 
 | Field | Type | Values | Description |
 |---|---|---|---|
+| `patches` | [`PatchSpec`](#patchspec)[] |  |  |
 | `service` | [`GlobAttributes`](#globattributes)[] |  | GlobDefinitionCriteria allows defining a group of services to be instrumented according to a set of attributes. If a given executable/service matches multiple of the attributes, the earliest defined service will take precedence. |
 | `spans` | [`CustomSpanSpec`](#customspanspec)[] |  |  |
 
@@ -841,6 +842,19 @@ HTTPParsingMatch defines matching criteria for an HTTP parsing rule. Header rule
 | `patterns` | `glob`[] | `app-*`, `service-??`, `prod-*-db`, etc | Is a list of glob patterns to match header names against (headers only) |
 | `response_status_code` | [`NumericRange`](#numericrange) |  | Filters this rule to only apply when the response status code matches the given range. If unset, the rule applies regardless of status code. |
 | `url_path_patterns` | `glob`[] | `app-*`, `service-??`, `prod-*-db`, etc | Is a list of glob patterns to match the request path against (shared) |
+
+### PatchSpec
+
+PatchSpec makes one Java method return a constant String until its TTL ends. The descriptor is required so overloads are never patched by accident.
+
+| Field | Type | Values | Description |
+|---|---|---|---|
+| `action` | `string` |  |  |
+| `class` | `string` |  |  |
+| `descriptor` | `string` |  |  |
+| `method` | `string` |  |  |
+| `ttl` | `duration` | `30s`, `5m`, `1ms`, etc |  |
+| `value` | `string` |  |  |
 
 ### SamplerConfig
 

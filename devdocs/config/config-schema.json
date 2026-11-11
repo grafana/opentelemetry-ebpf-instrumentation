@@ -787,6 +787,12 @@
     },
     "DynamicInstrumentationRule": {
       "properties": {
+        "patches": {
+          "items": {
+            "$ref": "#/$defs/PatchSpec"
+          },
+          "type": "array"
+        },
         "service": {
           "$ref": "#/$defs/GlobDefinitionCriteria"
         },
@@ -2580,6 +2586,36 @@
         }
       },
       "type": "object"
+    },
+    "PatchSpec": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "class": {
+          "type": "string"
+        },
+        "descriptor": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "ttl": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m)$",
+          "examples": [
+            "30s",
+            "5m",
+            "1ms"
+          ]
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "description": "PatchSpec makes one Java method return a constant String until its TTL ends. The descriptor is required so overloads are never patched by accident."
     },
     "PayloadExtraction": {
       "properties": {

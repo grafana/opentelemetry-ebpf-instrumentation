@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gobwas/glob"
 
@@ -53,6 +54,8 @@ type ruleState struct {
 	matched    []int
 	definition config.DynamicInstrumentationRule
 	results    []ProbeResult
+	// patchExpiry holds the absolute expiry of each patch, keyed by PatchSpec.Target.
+	patchExpiry map[string]time.Time
 }
 
 func (m *Manager) Configure(cfg config.DynamicInstrumentationConfig, symbols SymbolResolver, metrics imetrics.Reporter) {
@@ -142,7 +145,7 @@ func (m *Manager) ApplyRule(id string, rule config.DynamicInstrumentationRule) (
 	if m.closed {
 		return nil, errors.New("dynamic instrumentation is shutting down")
 	}
-	m.rules["api/"+id] = ruleState{definition: rule}
+	m.rules["api/"+id] = ruleState{definition: rule, patchExpiry: patchExpiries(m.rules["api/"+id], rule)}
 	m.restoreRuleLocked(rule)
 	err := m.reconcileLocked()
 	m.notifyLocked()
@@ -177,14 +180,17 @@ func (m *Manager) SetConfigRules(rules []config.DynamicInstrumentationRule) erro
 	if m.closed {
 		return errors.New("dynamic instrumentation is shutting down")
 	}
+	priorConfig := map[string]ruleState{}
 	for id := range m.rules {
 		if len(id) >= 7 && id[:7] == "config/" {
+			priorConfig[id] = m.rules[id]
 			delete(m.rules, id)
 		}
 	}
 	for i, rule := range rules {
 		m.restoreRuleLocked(rule)
-		m.rules[fmt.Sprintf("config/%d", i)] = ruleState{definition: rule}
+		key := fmt.Sprintf("config/%d", i)
+		m.rules[key] = ruleState{definition: rule, patchExpiry: patchExpiries(priorConfig[key], rule)}
 	}
 	err := m.reconcileLocked()
 	m.notifyLocked()
@@ -259,6 +265,7 @@ func (m *Manager) matchingPIDsLocked(criteria services.GlobDefinitionCriteria) [
 
 func (m *Manager) reconcileLocked() error {
 	desired := map[dynamicKey]config.CustomSpanSpec{}
+	desiredPatches := map[patchKey]config.PatchSpec{}
 	var joined error
 	for _, id := range m.ruleIDsLocked() {
 		rule := m.rules[id]
@@ -362,6 +369,7 @@ func (m *Manager) reconcileLocked() error {
 					rule.results = append(rule.results, result)
 				}
 			}
+			rule.results = append(rule.results, m.reconcilePatchesLocked(pid, rule, desiredPatches)...)
 		}
 		if len(rule.results) == 0 {
 			rule.results = []ProbeResult{{Status: "pending", Error: "no matching process discovered"}}
@@ -381,7 +389,7 @@ func (m *Manager) reconcileLocked() error {
 			joined = errors.Join(joined, m.removeDynamicLocked(key))
 		}
 	}
-	return joined
+	return errors.Join(joined, m.removeStalePatchesLocked(desiredPatches))
 }
 
 func (m *Manager) resultLocked(pid int, function, name string) ProbeResult {

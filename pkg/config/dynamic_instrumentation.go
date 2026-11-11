@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/gobwas/glob"
@@ -30,6 +31,43 @@ type DynamicInstrumentationConfig struct {
 type DynamicInstrumentationRule struct {
 	Service services.GlobDefinitionCriteria `yaml:"service"`
 	Spans   []CustomSpanSpec                `yaml:"spans"`
+	Patches []PatchSpec                     `yaml:"patches"`
+}
+
+const (
+	PatchActionReturn = "return"
+	MaxPatchTTL       = 24 * time.Hour
+)
+
+// PatchSpec makes one Java method return a constant String until its TTL ends. The descriptor
+// is required so overloads are never patched by accident.
+type PatchSpec struct {
+	Class      string        `yaml:"class"`
+	Method     string        `yaml:"method"`
+	Descriptor string        `yaml:"descriptor"`
+	Action     string        `yaml:"action"`
+	Value      string        `yaml:"value"`
+	TTL        time.Duration `yaml:"ttl"`
+}
+
+func (p *PatchSpec) Target() string {
+	return p.Class + "." + p.Method + p.Descriptor
+}
+
+func (p *PatchSpec) Validate() error {
+	if p.Class == "" || p.Method == "" || p.Descriptor == "" {
+		return errors.New("patch class, method and descriptor are required")
+	}
+	if !strings.HasPrefix(p.Descriptor, "(") || !strings.HasSuffix(p.Descriptor, ")Ljava/lang/String;") {
+		return fmt.Errorf("patch %s: descriptor must be a JVM method descriptor returning java.lang.String", p.Target())
+	}
+	if p.Action != PatchActionReturn {
+		return fmt.Errorf("patch %s: action must be %q", p.Target(), PatchActionReturn)
+	}
+	if p.TTL <= 0 || p.TTL > MaxPatchTTL {
+		return fmt.Errorf("patch %s: ttl must be between 0 and %s", p.Target(), MaxPatchTTL)
+	}
+	return nil
 }
 
 func (c *DynamicInstrumentationConfig) IsEnabled() bool {
@@ -67,8 +105,13 @@ func (r *DynamicInstrumentationRule) Validate() error {
 	if err := r.Service.Validate(); err != nil {
 		return err
 	}
-	if len(r.Spans) == 0 {
-		return errors.New("spans must not be empty")
+	if len(r.Spans) == 0 && len(r.Patches) == 0 {
+		return errors.New("spans or patches must not be empty")
+	}
+	for i := range r.Patches {
+		if err := r.Patches[i].Validate(); err != nil {
+			return err
+		}
 	}
 	c := CustomSpanConfig{TTL: CustomSpanDefaultTTL, Spans: r.Spans}
 	if err := c.Validate(); err != nil {

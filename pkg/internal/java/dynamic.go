@@ -199,6 +199,43 @@ func (t *DynamicTarget) AttachLiveSpan(pid app.PID, _ uint32, span *config.Custo
 	return &javaDynamicProbe{target: t, cookie: cookie, method: method, registration: registration}, nil
 }
 
+// AttachLivePatch makes the method return the patch value until expiresAt. The agent enforces
+// the deadline itself, so the patch ends on time even if OBI dies.
+func (t *DynamicTarget) AttachLivePatch(pid app.PID, patch *config.PatchSpec, expiresAt time.Time, cookie uint64) (io.Closer, error) {
+	if pid != t.pid {
+		return nil, errors.New("java target PID mismatch")
+	}
+	t.probesMu.Lock()
+	defer t.probesMu.Unlock()
+	err := t.attachPatchCommand(t.ctx, agentctl.Patch{
+		Class:      patch.Class,
+		Method:     patch.Method,
+		Descriptor: patch.Descriptor,
+		Value:      patch.Value,
+		ExpiresAt:  expiresAt,
+	}, cookie)
+	if err != nil {
+		_, detachErr := t.command(context.WithoutCancel(t.ctx), javaDetachMethod, "", cookie)
+		return nil, errors.Join(err, detachErr)
+	}
+	return &javaPatch{target: t, cookie: cookie}, nil
+}
+
+type javaPatch struct {
+	target *DynamicTarget
+	cookie uint64
+}
+
+func (p *javaPatch) Close() error {
+	p.target.probesMu.Lock()
+	defer p.target.probesMu.Unlock()
+	_, err := p.target.command(context.WithoutCancel(p.target.ctx), javaDetachMethod, "", p.cookie)
+	if start, startErr := procs.StartTime(p.target.pid); errors.Is(startErr, os.ErrNotExist) || (startErr == nil && start != p.target.startTime) {
+		return nil
+	}
+	return err
+}
+
 type javaDynamicProbe struct {
 	target       *DynamicTarget
 	cookie       uint64
@@ -227,6 +264,20 @@ func (p *javaDynamicProbe) Close() error {
 }
 
 func (t *DynamicTarget) command(parent context.Context, operation byte, method string, cookie uint64) ([]string, error) {
+	return t.withSession(parent, func(ctx context.Context, endpoint javaEndpoint) ([]string, error) {
+		return t.exchange(ctx, endpoint, operation, method, cookie)
+	})
+}
+
+func (t *DynamicTarget) attachPatchCommand(parent context.Context, patch agentctl.Patch, cookie uint64) error {
+	_, err := t.withSession(parent, func(ctx context.Context, endpoint javaEndpoint) ([]string, error) {
+		return nil, agentctl.ExchangePatch(ctx, t.pid, endpoint.port, endpoint.token, t.session, patch, cookie)
+	})
+	return err
+}
+
+// withSession checks the target's identity and claims the agent session before running call.
+func (t *DynamicTarget) withSession(parent context.Context, call func(context.Context, javaEndpoint) ([]string, error)) ([]string, error) {
 	t.rpcMu.Lock()
 	defer t.rpcMu.Unlock()
 	start, err := procs.StartTime(t.pid)
@@ -247,7 +298,7 @@ func (t *DynamicTarget) command(parent context.Context, operation byte, method s
 		}
 		t.claimedToken = endpoint.token
 	}
-	return t.exchange(ctx, endpoint, operation, method, cookie)
+	return call(ctx, endpoint)
 }
 
 func (t *DynamicTarget) exchange(ctx context.Context, endpoint javaEndpoint, operation byte, method string, cookie uint64) ([]string, error) {
