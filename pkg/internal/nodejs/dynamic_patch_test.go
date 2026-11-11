@@ -13,6 +13,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -143,24 +144,59 @@ setInterval(() => {}, 1000);
 	_, err = target.command(ctx, agentctl.Attach, symbol, 80)
 	require.NoError(t, err)
 	spanConflict := agentctl.Patch{Method: symbol, Value: "NOT_APPLIED", ExpiresAt: time.Now().Add(5 * time.Second)}
-	require.ErrorContains(t, agentctl.ExchangePatch(ctx, processID, uint32(port), tokenArray(token), target.session, spanConflict, 81), "function already has a span probe")
+	_, err = agentctl.ExchangePatch(ctx, processID, uint32(port), tokenArray(token), target.session, spanConflict, 81)
+	require.ErrorContains(t, err, "function already has a span probe")
 	_, err = target.command(ctx, agentctl.Detach, "", 80)
+	require.NoError(t, err)
+	var evidence agentctl.PatchEvidence
+	_, err = agentctl.ExchangeCounters(ctx, processID, uint32(port), tokenArray(token), target.session)
+	require.ErrorContains(t, err, "PatchRefusal UNSUPPORTED_OPERATION")
+	fragmented := agentctl.Patch{Method: symbol, Value: "T16_FRAGMENTED", ExpiresAt: time.Now().Add(5 * time.Second)}
+	evidence, err = exchangePatchFragmented(ctx, processID, uint32(port), tokenArray(token), target.session, fragmented, 70)
+	require.NoError(t, err)
+	require.Empty(t, evidence)
+	requireOversizedPatchRejected(t, processID, uint32(port), tokenArray(token), target.session)
+	fragmentedResult := nodeCall(t, stdin, scanner, "fragmented", "dynamicCaller", "ignored")
+	require.Equal(t, "T16_FRAGMENTED", fragmentedResult.Result)
+	_, err = target.command(ctx, agentctl.Detach, "", 70)
 	require.NoError(t, err)
 
 	patch := agentctl.Patch{Method: symbol, Value: "T16_RETURN", ExpiresAt: time.Now().Add(500 * time.Millisecond)}
-	require.NoError(t, agentctl.ExchangePatch(ctx, processID, uint32(port), tokenArray(token), target.session, patch, 71))
+	strict := patch
+	strict.RequireIdentity = true
+	_, err = agentctl.ExchangePatch(ctx, processID, uint32(port), tokenArray(token), target.session, strict, 69)
+	require.ErrorContains(t, err, "PatchRefusal UNSUPPORTED_IDENTITY")
+	identified := patch
+	identified.Loader = "loader-1"
+	_, err = agentctl.ExchangePatch(ctx, processID, uint32(port), tokenArray(token), target.session, identified, 66)
+	require.ErrorContains(t, err, "PatchRefusal UNSUPPORTED_IDENTITY")
+	observe := patch
+	observe.Observe = true
+	_, err = agentctl.ExchangePatch(ctx, processID, uint32(port), tokenArray(token), target.session, observe, 68)
+	require.ErrorContains(t, err, "PatchRefusal UNSUPPORTED_MODE")
+	predicate := patch
+	predicate.Predicate = &agentctl.Predicate{Argument: 0, Contains: "blocked"}
+	_, err = agentctl.ExchangePatch(ctx, processID, uint32(port), tokenArray(token), target.session, predicate, 67)
+	require.ErrorContains(t, err, "PatchRefusal UNSUPPORTED_PREDICATE")
+	evidence, err = agentctl.ExchangePatch(ctx, processID, uint32(port), tokenArray(token), target.session, patch, 71)
+	require.NoError(t, err)
+	require.Empty(t, evidence.Loader)
+	require.Empty(t, evidence.ArtifactSHA256)
+	require.Empty(t, evidence.Fingerprint)
 	patched := nodeCall(t, stdin, scanner, "patched", "dynamicCaller", "ignored")
 	require.Equal(t, "T16_RETURN", patched.Result)
 	require.EqualValues(t, 1, patched.Calls, "the wrapper must not run the original body")
 	require.EqualValues(t, 1, location.hits, "the location hook cannot reach a call intercepted by the export wrapper")
 
 	replacement := agentctl.Patch{Method: symbol, Value: "T16_REPLACED", ExpiresAt: time.Now().Add(5 * time.Second)}
-	require.NoError(t, agentctl.ExchangePatch(ctx, processID, uint32(port), tokenArray(token), target.session, replacement, 72))
+	_, err = agentctl.ExchangePatch(ctx, processID, uint32(port), tokenArray(token), target.session, replacement, 72)
+	require.NoError(t, err)
 	otherSymbols, err := target.ResolveLiveSymbols(processID, "*patch_fixture.cjs:exports.otherChoke")
 	require.NoError(t, err)
 	require.Len(t, otherSymbols, 1)
 	duplicateCookie := agentctl.Patch{Method: otherSymbols[0], Value: "NOT_APPLIED", ExpiresAt: time.Now().Add(5 * time.Second)}
-	require.ErrorContains(t, agentctl.ExchangePatch(ctx, processID, uint32(port), tokenArray(token), target.session, duplicateCookie, 72), "patch cookie is already active")
+	_, err = agentctl.ExchangePatch(ctx, processID, uint32(port), tokenArray(token), target.session, duplicateCookie, 72)
+	require.ErrorContains(t, err, "patch cookie is already active")
 	_, err = target.command(ctx, agentctl.Attach, symbol, 82)
 	require.ErrorContains(t, err, "function already has a return patch")
 	_, err = target.command(ctx, agentctl.Attach, otherSymbols[0], 72)
@@ -196,7 +232,8 @@ setInterval(() => {}, 1000);
 	require.Contains(t, returnError, "non-return position")
 
 	expiring := agentctl.Patch{Method: symbol, Value: "T16_EXPIRED", ExpiresAt: time.Now().Add(150 * time.Millisecond)}
-	require.NoError(t, agentctl.ExchangePatch(ctx, processID, uint32(port), tokenArray(token), target.session, expiring, 72))
+	_, err = agentctl.ExchangePatch(ctx, processID, uint32(port), tokenArray(token), target.session, expiring, 72)
+	require.NoError(t, err)
 	beforeExpiry := nodeCall(t, stdin, scanner, "before-expiry", "dynamicCaller", "not-run")
 	require.Equal(t, "T16_EXPIRED", beforeExpiry.Result)
 	expired, hits, returnError := nodeCallAtLocation(t, stdin, scanner, location, "after-expiry", "block-call", "250")
@@ -267,7 +304,8 @@ func TestNodeLodashReturnPatchCanary(t *testing.T) {
 	t.Logf("Node target symbol: %s", symbol)
 
 	patch := agentctl.Patch{Method: symbol, Value: "T16_CANARY_BLOCKED", ExpiresAt: time.Now().Add(5 * time.Second)}
-	require.NoError(t, agentctl.ExchangePatch(ctx, app.PID(pid), port, token, target.session, patch, 91))
+	_, err = agentctl.ExchangePatch(ctx, app.PID(pid), port, token, target.session, patch, 91)
+	require.NoError(t, err)
 	patched := postNodeJSON[canaryResponse](t, vulnerable.port, "/canary")
 	require.False(t, patched.Hit)
 	require.True(t, patched.MarkerPresent)
@@ -286,7 +324,8 @@ func TestNodeLodashReturnPatchCanary(t *testing.T) {
 	require.False(t, removed.MarkerPresent)
 
 	expiring := agentctl.Patch{Method: symbol, Value: "T16_CANARY_BLOCKED", ExpiresAt: time.Now().Add(250 * time.Millisecond)}
-	require.NoError(t, agentctl.ExchangePatch(ctx, app.PID(pid), port, token, target.session, expiring, 92))
+	_, err = agentctl.ExchangePatch(ctx, app.PID(pid), port, token, target.session, expiring, 92)
+	require.NoError(t, err)
 	require.False(t, postNodeJSON[canaryResponse](t, vulnerable.port, "/canary").Hit)
 	time.Sleep(350 * time.Millisecond)
 	afterTTL := postNodeJSON[canaryResponse](t, vulnerable.port, "/canary")
@@ -872,6 +911,110 @@ func readNodeCall(t *testing.T, scanner *bufio.Scanner, id string) nodeCallResul
 func tokenArray(value []byte) (token [16]byte) {
 	copy(token[:], value)
 	return token
+}
+
+func exchangePatchFragmented(ctx context.Context, pid app.PID, port uint32, token, session [16]byte, patch agentctl.Patch, cookie uint64) (agentctl.PatchEvidence, error) {
+	var payload bytes.Buffer
+	writeString := func(value string) {
+		_ = binary.Write(&payload, binary.BigEndian, uint32(len(value)))
+		payload.WriteString(value)
+	}
+	writeString("")
+	writeString(patch.Method)
+	writeString("")
+	payload.WriteByte(1)
+	writeString(patch.Value)
+	_ = binary.Write(&payload, binary.BigEndian, patch.ExpiresAt.UnixMilli())
+	_ = binary.Write(&payload, binary.BigEndian, cookie)
+	payload.WriteByte(0)
+	writeString("")
+	writeString("")
+	writeString("")
+	payload.WriteByte(0)
+	_ = binary.Write(&payload, binary.BigEndian, int32(-1))
+	writeString("")
+	request := append(append(append([]byte{}, token[:]...), session[:]...), agentctl.AttachPatch)
+	request = append(request, payload.Bytes()...)
+	var connection net.Conn
+	err := netns.WithNetNS(int(pid), func() error {
+		var err error
+		connection, err = (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
+		return err
+	})
+	if err != nil {
+		return agentctl.PatchEvidence{}, err
+	}
+	defer connection.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = connection.SetDeadline(deadline)
+	}
+	predicatePrefix := 33 + 4 + (4 + len(patch.Method)) + 4 + 1 + (4 + len(patch.Value)) + 8 + 8 + 1 + 12 + 1 + 4
+	for _, b := range request[:predicatePrefix] {
+		if _, err := connection.Write([]byte{b}); err != nil {
+			return agentctl.PatchEvidence{}, err
+		}
+	}
+	_ = connection.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	var earlyResponse [1]byte
+	_, err = connection.Read(earlyResponse[:])
+	netErr, isNetError := errors.AsType[net.Error](err)
+	if !isNetError || !netErr.Timeout() {
+		return agentctl.PatchEvidence{}, fmt.Errorf("Node responded or closed the connection before the fragmented predicate length arrived: %w", err)
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = connection.SetDeadline(deadline)
+	}
+	for _, b := range request[predicatePrefix:] {
+		if _, err := connection.Write([]byte{b}); err != nil {
+			return agentctl.PatchEvidence{}, err
+		}
+	}
+	var status [1]byte
+	if _, err := io.ReadFull(connection, status[:]); err != nil {
+		return agentctl.PatchEvidence{}, err
+	}
+	if status[0] != 0 {
+		message, err := agentctl.ReadString(connection)
+		if err != nil {
+			return agentctl.PatchEvidence{}, err
+		}
+		return agentctl.PatchEvidence{}, fmt.Errorf("%s", message)
+	}
+	var evidence agentctl.PatchEvidence
+	for _, field := range []*string{&evidence.Loader, &evidence.ArtifactSHA256, &evidence.Fingerprint} {
+		value, err := agentctl.ReadString(connection)
+		if err != nil {
+			return agentctl.PatchEvidence{}, err
+		}
+		*field = value
+	}
+	return evidence, nil
+}
+
+func requireOversizedPatchRejected(t *testing.T, pid app.PID, port uint32, token, session [16]byte) {
+	t.Helper()
+	var connection net.Conn
+	err := netns.WithNetNS(int(pid), func() error {
+		var err error
+		connection, err = (&net.Dialer{}).Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
+		return err
+	})
+	require.NoError(t, err)
+	defer connection.Close()
+	header := append(append(append([]byte{}, token[:]...), session[:]...), agentctl.AttachPatch)
+	_, err = connection.Write(header)
+	require.NoError(t, err)
+	var oversized [4]byte
+	binary.BigEndian.PutUint32(oversized[:], 65537)
+	_, err = connection.Write(oversized[:])
+	require.NoError(t, err)
+	_ = connection.SetReadDeadline(time.Now().Add(time.Second))
+	var response [1]byte
+	_, err = connection.Read(response[:])
+	require.Error(t, err, "oversized field must be rejected without a response")
+	if netErr, ok := errors.AsType[net.Error](err); ok {
+		require.False(t, netErr.Timeout(), "oversized field must not be left pending")
+	}
 }
 
 type locationInspector struct {

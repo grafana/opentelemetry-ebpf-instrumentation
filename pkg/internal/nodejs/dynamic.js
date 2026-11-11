@@ -23,6 +23,7 @@
   const MAX_STRING = 127;
   const MAX_PAYLOAD = 1900;
   const MAX_PATCH_REQUEST_BYTES = 262210;
+  const MAX_PATCH_FIELD_BYTES = 65536;
   const scopes = new AsyncLocalStorage();
   const probes = new Map();
   const patches = new Map();
@@ -305,6 +306,38 @@
     return Buffer.concat([size, text]);
   }
 
+  function patchRequestLength(data) {
+    let offset = 33;
+    for (let i = 0; i < 3; i++) {
+      if (data.length < offset + 4) return;
+      const size = data.readUInt32BE(offset);
+      if (size > MAX_PATCH_FIELD_BYTES) throw new Error('invalid patch string');
+      offset += 4 + size;
+      if (data.length < offset) return;
+    }
+    if (data.length < offset + 1 + 4) return;
+    offset++;
+    const valueSize = data.readUInt32BE(offset);
+    if (valueSize > MAX_PATCH_FIELD_BYTES) throw new Error('invalid patch string');
+    offset += 4 + valueSize + 16;
+    if (data.length < offset) return;
+    offset += 1;
+    for (let i = 0; i < 3; i++) {
+      if (data.length < offset + 4) return;
+      const size = data.readUInt32BE(offset);
+      if (size > MAX_PATCH_FIELD_BYTES) throw new Error('invalid patch string');
+      offset += 4 + size;
+      if (data.length < offset) return;
+    }
+    if (data.length < offset + 1 + 4 + 4) return;
+    offset += 1 + 4;
+    const predicateSize = data.readUInt32BE(offset);
+    if (predicateSize > MAX_PATCH_FIELD_BYTES) throw new Error('invalid patch string');
+    offset += 4 + predicateSize;
+    if (offset > MAX_PATCH_REQUEST_BYTES) throw new Error('patch request exceeds limit');
+    return offset;
+  }
+
   function command(data) {
     if (!crypto.timingSafeEqual(data.subarray(0, 16), token)) throw new Error('Invalid agent token');
     const requestedSession = data.subarray(16, 32).toString('hex');
@@ -334,13 +367,33 @@
         const actionOffset = descriptor.next;
         if (actionOffset + 1 > data.length || data[actionOffset] !== 1) throw new Error('unsupported patch action');
         const value = readString(data, actionOffset + 1);
-        if (value.next + 16 !== data.length) throw new Error('invalid patch request length');
+        const base = value.next;
+        if (base + 16 + 1 > data.length) throw new Error('invalid patch request length');
         const expiresAt = Number(data.readBigInt64BE(value.next));
         const cookie = data.subarray(value.next + 8, value.next + 16).toString('hex');
+        let offset = base + 16;
+        const requireIdentity = data[offset++];
+        if (requireIdentity > 1) throw new Error('invalid require-identity flag');
+        const loader = readString(data, offset); offset = loader.next;
+        const artifact = readString(data, offset); offset = artifact.next;
+        const fingerprint = readString(data, offset); offset = fingerprint.next;
+        if (requireIdentity || loader.value || artifact.value || fingerprint.value) {
+          throw new Error('PatchRefusal UNSUPPORTED_IDENTITY: Node cannot verify loader, artifact, or fingerprint identity');
+        }
+        if (data.length < offset + 1 + 4) throw new Error('invalid patch request length');
+        const observe = data[offset++];
+        if (observe > 1) throw new Error('invalid observe flag');
+        const predicateArgument = data.readInt32BE(offset); offset += 4;
+        const predicate = readString(data, offset); offset = predicate.next;
+        if (offset !== data.length) throw new Error('invalid patch request length');
+        if (observe) throw new Error('PatchRefusal UNSUPPORTED_MODE: Node does not support observe patches');
+        if (predicateArgument !== -1 || predicate.value) throw new Error('PatchRefusal UNSUPPORTED_PREDICATE: Node does not support patch predicates');
         attachReturn(method.value, value.value, expiresAt, cookie);
       }
+      else if (op === 6) throw new Error('PatchRefusal UNSUPPORTED_OPERATION: Node does not support patch counters');
       else throw new Error('Unknown agent command');
     }
+    if (op === 5) return Buffer.concat([Buffer.from([0]), wireString(''), wireString(''), wireString('')]);
     return Buffer.from([0]);
   }
 
@@ -363,21 +416,9 @@
         if (length > 65581) { socket.destroy(); return; }
       }
       if (op === 5) {
-        // Three length-prefixed identity strings, action byte, return string,
-        // absolute expiry and cookie. The overall request stays bounded.
-        let offset = 33;
-        for (let i = 0; i < 3; i++) {
-          if (data.length < offset + 4) return;
-          const size = data.readUInt32BE(offset);
-          if (size > 65536) { socket.destroy(); return; }
-          offset += 4 + size;
-          if (data.length < offset) return;
-        }
-        if (data.length < offset + 1 + 4) return;
-        offset++;
-        const size = data.readUInt32BE(offset);
-        if (size > 65536) { socket.destroy(); return; }
-        length = offset + 4 + size + 16;
+        try { length = patchRequestLength(data); }
+        catch (_) { socket.destroy(); return; }
+        if (!length) return;
         if (length > MAX_PATCH_REQUEST_BYTES) { socket.destroy(); return; }
       }
       if (data.length < length) return;
