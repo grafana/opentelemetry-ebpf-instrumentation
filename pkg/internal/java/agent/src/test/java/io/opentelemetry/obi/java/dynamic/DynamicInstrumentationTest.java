@@ -69,6 +69,50 @@ class DynamicInstrumentationTest {
   }
 
   @Test
+  void observeModeCountsCallsWithoutChangingThemAndUnknownIsNotZero() throws Exception {
+    File output = new File(directory, "observe-output");
+    List<String> command = new ArrayList<>();
+    command.add(System.getProperty("java.home") + "/bin/java");
+    command.add(
+        "-javaagent:" + System.getProperty("obi.agent.jar") + "=dynamicInstrumentation=true");
+    command.add("-cp");
+    command.add(System.getProperty("obi.test.classpath"));
+    command.add("testutil.PatchObserveProbeTarget");
+    Process process =
+        new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(output).start();
+    try {
+      assertTrue(process.waitFor(90, TimeUnit.SECONDS), "observe fixture timed out");
+      String log = new String(Files.readAllBytes(output.toPath()), StandardCharsets.UTF_8);
+      assertEquals(0, process.exitValue(), log);
+      assertTrue(log.contains("OBSERVE_OK"), log);
+    } finally {
+      process.destroyForcibly();
+    }
+  }
+
+  @Test
+  void patchIdentityResolvesOneLoaderAndRefusesEverythingAmbiguousOrMismatched() throws Exception {
+    File output = new File(directory, "identity-output");
+    List<String> command = new ArrayList<>();
+    command.add(System.getProperty("java.home") + "/bin/java");
+    command.add(
+        "-javaagent:" + System.getProperty("obi.agent.jar") + "=dynamicInstrumentation=true");
+    command.add("-cp");
+    command.add(System.getProperty("obi.test.classpath"));
+    command.add("testutil.PatchIdentityProbeTarget");
+    Process process =
+        new ProcessBuilder(command).redirectErrorStream(true).redirectOutput(output).start();
+    try {
+      assertTrue(process.waitFor(90, TimeUnit.SECONDS), "identity fixture timed out");
+      String log = new String(Files.readAllBytes(output.toPath()), StandardCharsets.UTF_8);
+      assertEquals(0, process.exitValue(), log);
+      assertTrue(log.contains("IDENTITY_OK"), log);
+    } finally {
+      process.destroyForcibly();
+    }
+  }
+
+  @Test
   void interoperatesWithOpenTelemetryJavaAgent() throws Exception {
     String agent = System.getenv("OBI_TEST_OTEL_AGENT_JAR");
     Assumptions.assumeTrue(agent != null, "set OBI_TEST_OTEL_AGENT_JAR for agent coexistence test");

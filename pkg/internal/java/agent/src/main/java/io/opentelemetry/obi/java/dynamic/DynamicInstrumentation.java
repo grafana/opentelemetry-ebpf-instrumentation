@@ -7,6 +7,7 @@ package io.opentelemetry.obi.java.dynamic;
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
 import java.lang.instrument.Instrumentation;
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.*;
@@ -43,6 +44,9 @@ public final class DynamicInstrumentation {
   private final Method remove;
   private final Method addPatch;
   private final Method removePatch;
+  private final Method addObserve;
+  private final Method patchCounters;
+  private final PatchResolver resolver;
 
   public DynamicInstrumentation(Instrumentation inst) throws Exception {
     this.inst = inst;
@@ -52,9 +56,31 @@ public final class DynamicInstrumentation {
     Class<?> patchRuntime = Class.forName(PatchRuntime.class.getName(), true, null);
     addPatch =
         patchRuntime.getMethod(
-            "add", String.class, String.class, String.class, String.class, long.class, long.class);
+            "add",
+            ClassLoader.class,
+            String.class,
+            String.class,
+            String.class,
+            String.class,
+            long.class,
+            long.class);
     removePatch =
-        patchRuntime.getMethod("remove", String.class, String.class, String.class, long.class);
+        patchRuntime.getMethod(
+            "remove", ClassLoader.class, String.class, String.class, String.class, long.class);
+    addObserve =
+        patchRuntime.getMethod(
+            "addObserve",
+            ClassLoader.class,
+            String.class,
+            String.class,
+            String.class,
+            int.class,
+            String.class,
+            long.class,
+            long.class);
+    patchCounters = patchRuntime.getMethod("counters");
+    // First, so its fingerprint capture sees class bytes before this agent's own transformer.
+    resolver = new PatchResolver(inst);
     new AgentBuilder.Default()
         .disableClassFormatChanges()
         .ignore(
@@ -87,7 +113,7 @@ public final class DynamicInstrumentation {
                     return true;
                   }
                 }
-                return !patchedMethods(type.getName()).isEmpty();
+                return hasPatchesFor(type.getName());
               }
             })
         .transform(
@@ -102,8 +128,13 @@ public final class DynamicInstrumentation {
                 }
               }
               ElementMatcher.Junction<MethodDescription> patched = none();
-              for (Patch patch : patchedMethods(type.getName())) {
-                patched = patched.or(patch.matcher());
+              ElementMatcher.Junction<MethodDescription> observed = none();
+              for (Patch patch : patchedMethods(type.getName(), loader)) {
+                if (patch.observe) {
+                  observed = observed.or(patch.matcher());
+                } else {
+                  patched = patched.or(patch.matcher());
+                }
               }
               return builder
                   .visit(
@@ -118,6 +149,14 @@ public final class DynamicInstrumentation {
                       Advice.to(PatchAdvice.class)
                           .on(
                               patched
+                                  .and(isMethod())
+                                  .and(not(isAbstract()))
+                                  .and(not(isNative()))
+                                  .and(not(isSynthetic()))))
+                  .visit(
+                      Advice.to(ObserveAdvice.class)
+                          .on(
+                              observed
                                   .and(isMethod())
                                   .and(not(isAbstract()))
                                   .and(not(isNative()))
@@ -178,43 +217,56 @@ public final class DynamicInstrumentation {
     }
   }
 
-  public synchronized void attachPatch(
+  /**
+   * Resolves the target to one method in one loader (refusing anything ambiguous or mismatched),
+   * then patches exactly that class and returns the V0 evidence of what was resolved.
+   */
+  public synchronized PatchIdentity.Evidence attachPatch(
       String className,
       String method,
       String descriptor,
       String constant,
       long expiresAtMillis,
-      long cookie)
+      long cookie,
+      PatchIdentity.Request identity,
+      PatchObservation.Request mode)
       throws Exception {
-    if (!descriptor.endsWith(RETURN_STRING_SUFFIX)) {
+    mode.validate(descriptor);
+    if (!mode.observe && !descriptor.endsWith(RETURN_STRING_SUFFIX)) {
       throw new IllegalArgumentException("A return patch needs a method returning String");
     }
     long remainingMillis = expiresAtMillis - System.currentTimeMillis();
     if (remainingMillis <= 0 || remainingMillis > MAX_PATCH_TTL_MILLIS) {
       throw new IllegalArgumentException("Patch expiry must be within the next 24 hours");
     }
-    if (!hasLoadedMethod(className, method, descriptor)) {
-      throw new IllegalArgumentException(
-          "No loaded, modifiable Java method: " + className + "." + method + descriptor);
-    }
+    PatchResolver.Resolved resolved = resolver.resolve(className, method, descriptor, identity);
     // The deadline is monotonic so wall-clock jumps cannot extend or shorten the patch.
     long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(remainingMillis);
-    Patch patch = new Patch(className, method, descriptor, constant, cookie, deadlineNanos);
+    Patch patch =
+        new Patch(
+            resolved.type,
+            resolver.selectorOf(resolved.type.getClassLoader()),
+            className,
+            method,
+            descriptor,
+            constant,
+            cookie,
+            deadlineNanos,
+            mode);
     Patch prior = patches.put(patch.key(), patch);
-    addPatch.invoke(null, className, method, descriptor, constant, cookie, deadlineNanos);
+    installPatch(patch);
     try {
-      retransformClass(className);
+      retransformType(resolved.type);
     } catch (Exception error) {
       if (prior == null) {
         patches.remove(patch.key());
-        removePatch.invoke(null, className, method, descriptor, cookie);
+        removePatch.invoke(null, patch.loader(), className, method, descriptor, cookie);
       } else {
         patches.put(prior.key(), prior);
-        addPatch.invoke(
-            null, className, method, descriptor, prior.constant, prior.cookie, prior.deadlineNanos);
+        installPatch(prior);
       }
       try {
-        retransformClass(className);
+        retransformType(resolved.type);
       } catch (Exception rollback) {
         error.addSuppressed(rollback);
       }
@@ -226,6 +278,47 @@ public final class DynamicInstrumentation {
     patchExpiry.put(
         cookie,
         expiryTimer.schedule(() -> expirePatch(cookie), remainingMillis, TimeUnit.MILLISECONDS));
+    return resolved.evidence;
+  }
+
+  private void installPatch(Patch patch) throws Exception {
+    if (patch.observe) {
+      addObserve.invoke(
+          null,
+          patch.loader(),
+          patch.className,
+          patch.method,
+          patch.descriptor,
+          patch.argument,
+          patch.contains,
+          patch.cookie,
+          patch.deadlineNanos);
+    } else {
+      addPatch.invoke(
+          null,
+          patch.loader(),
+          patch.className,
+          patch.method,
+          patch.descriptor,
+          patch.constant,
+          patch.cookie,
+          patch.deadlineNanos);
+    }
+  }
+
+  /**
+   * Counters of the observing patches that are still installed. A patch that was detached, replaced
+   * or expired is simply absent, so a caller can tell "unknown" from a count of zero.
+   */
+  @SuppressWarnings("unchecked")
+  public List<PatchObservation.Counters> counters() throws Exception {
+    List<PatchObservation.Counters> out = new ArrayList<>();
+    for (long[] row : (List<long[]>) patchCounters.invoke(null)) {
+      out.add(
+          new PatchObservation.Counters(
+              row[0], row[1], row[2], row[3] != 0, row[4], row[5], row[6]));
+    }
+    return out;
   }
 
   private void expirePatch(long cookie) {
@@ -248,41 +341,30 @@ public final class DynamicInstrumentation {
       if (patch.cookie != cookie) {
         continue;
       }
-      removePatch.invoke(null, patch.className, patch.method, patch.descriptor, cookie);
+      removePatch.invoke(
+          null, patch.loader(), patch.className, patch.method, patch.descriptor, cookie);
       patches.remove(patch.key(), patch);
       cancelPatchExpiry(cookie);
-      retransformClass(patch.className);
+      retransformPatched(patch);
       return true;
     }
     return false;
   }
 
-  private boolean hasLoadedMethod(String className, String method, String descriptor) {
-    for (Class<?> type : inst.getAllLoadedClasses()) {
-      if (!eligible(type) || !type.getName().equals(className)) {
-        continue;
-      }
-      try {
-        for (MethodDescription candidate :
-            new TypeDescription.ForLoadedType(type).getDeclaredMethods()) {
-          if (candidate.isMethod()
-              && !candidate.isAbstract()
-              && !candidate.isNative()
-              && candidate.getName().equals(method)
-              && candidate.getDescriptor().equals(descriptor)) {
-            return true;
-          }
-        }
-      } catch (LinkageError ignored) {
+  private boolean hasPatchesFor(String className) {
+    for (Patch patch : patches.values()) {
+      if (patch.className.equals(className)) {
+        return true;
       }
     }
     return false;
   }
 
-  private List<Patch> patchedMethods(String className) {
+  /** The patches that apply to this class name as loaded by this loader. */
+  private List<Patch> patchedMethods(String className, ClassLoader loader) {
     List<Patch> matched = new ArrayList<>();
     for (Patch patch : patches.values()) {
-      if (patch.className.equals(className)) {
+      if (patch.className.equals(className) && patch.appliesTo(loader)) {
         matched.add(patch);
       }
     }
@@ -316,12 +398,13 @@ public final class DynamicInstrumentation {
     }
     List<Patch> removed = new ArrayList<>(patches.values());
     for (Patch patch : removed) {
-      removePatch.invoke(null, patch.className, patch.method, patch.descriptor, patch.cookie);
+      removePatch.invoke(
+          null, patch.loader(), patch.className, patch.method, patch.descriptor, patch.cookie);
       cancelPatchExpiry(patch.cookie);
     }
     patches.clear();
     for (Patch patch : removed) {
-      retransformClass(patch.className);
+      retransformPatched(patch);
     }
   }
 
@@ -343,6 +426,24 @@ public final class DynamicInstrumentation {
     }
   }
 
+  /** Retransforms only the class a patch was resolved to, not same-named classes elsewhere. */
+  private void retransformPatched(Patch patch) throws Exception {
+    Class<?> type = patch.type.get();
+    if (type != null) {
+      retransformType(type);
+    }
+  }
+
+  private void retransformType(Class<?> type) throws Exception {
+    String name = type.getName();
+    failures.remove(name);
+    inst.retransformClasses(type);
+    Throwable failure = failures.remove(name);
+    if (failure != null) {
+      throw new IllegalStateException("Retransforming " + name, failure);
+    }
+  }
+
   private boolean eligible(Class<?> type) {
     return !type.isArray()
         && !type.isPrimitive()
@@ -350,7 +451,7 @@ public final class DynamicInstrumentation {
         && inst.isModifiableClass(type);
   }
 
-  private static boolean excluded(String name) {
+  static boolean excluded(String name) {
     return name.startsWith("java.")
         || name.startsWith("javax.")
         || name.startsWith("jdk.")
@@ -362,20 +463,33 @@ public final class DynamicInstrumentation {
   }
 
   private static final class Patch {
+    final WeakReference<Class<?>> type;
+    final String loaderSelector;
     final String className;
     final String method;
     final String descriptor;
     final String constant;
     final long cookie;
     final long deadlineNanos;
+    final boolean observe;
+    final int argument;
+    final String contains;
 
     Patch(
+        Class<?> type,
+        String loaderSelector,
         String className,
         String method,
         String descriptor,
         String constant,
         long cookie,
-        long deadlineNanos) {
+        long deadlineNanos,
+        PatchObservation.Request mode) {
+      this.observe = mode.observe;
+      this.argument = mode.argument;
+      this.contains = mode.contains;
+      this.type = new WeakReference<>(type);
+      this.loaderSelector = loaderSelector;
       this.className = className;
       this.method = method;
       this.descriptor = descriptor;
@@ -384,8 +498,19 @@ public final class DynamicInstrumentation {
       this.deadlineNanos = deadlineNanos;
     }
 
+    ClassLoader loader() {
+      Class<?> resolved = type.get();
+      return resolved == null ? null : resolved.getClassLoader();
+    }
+
+    boolean appliesTo(ClassLoader candidate) {
+      Class<?> resolved = type.get();
+      return resolved != null && resolved.getClassLoader() == candidate;
+    }
+
+    /** Loader identity is part of the key, so same-named classes in two loaders do not collide. */
     String key() {
-      return className + "." + method + descriptor;
+      return loaderSelector + "|" + className + "." + method + descriptor;
     }
 
     ElementMatcher.Junction<MethodDescription> matcher() {
@@ -419,6 +544,20 @@ public final class DynamicInstrumentation {
       if (constant != null) {
         result = constant;
       }
+    }
+  }
+
+  /**
+   * Counts calls of an observed method. It cannot skip or alter the method, and it never throws.
+   */
+  public static final class ObserveAdvice {
+    @Advice.OnMethodEnter(suppress = Throwable.class)
+    public static void enter(
+        @Advice.Origin Class<?> owner,
+        @Advice.Origin("#m") String method,
+        @Advice.Origin("#d") String descriptor,
+        @Advice.AllArguments Object[] arguments) {
+      PatchRuntime.observe(owner, method, descriptor, arguments);
     }
   }
 

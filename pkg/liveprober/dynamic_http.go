@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -98,6 +99,15 @@ func (m *Manager) dynamicRoutes(mux *http.ServeMux) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /v1/dynamic-instrumentation/rules/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		results, ok := m.RuleStatus(id)
+		if !ok {
+			writeError(w, http.StatusNotFound, fmt.Errorf("no rule %q", id))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": id, "probes": results})
 	})
 	mux.HandleFunc("GET /v1/dynamic-instrumentation/probes", func(w http.ResponseWriter, r *http.Request) {
 		criteria, err := queryServiceCriteria(r)

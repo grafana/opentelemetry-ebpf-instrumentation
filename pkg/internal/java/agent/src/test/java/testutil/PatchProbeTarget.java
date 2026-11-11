@@ -107,6 +107,13 @@ public final class PatchProbeTarget {
           writeString(out, value);
           out.writeLong(System.currentTimeMillis() + ttlMillis);
           out.writeLong(cookie);
+          out.writeByte(0);
+          writeString(out, "");
+          writeString(out, "");
+          writeString(out, "");
+          out.writeByte(0); // enforce
+          out.writeInt(-1); // no predicate
+          writeString(out, "");
         });
   }
 
@@ -118,12 +125,22 @@ public final class PatchProbeTarget {
       out.write(token);
       out.write(session);
       out.writeByte(operation);
-      if (body != null) {
-        body.write(out);
+      try {
+        if (body != null) {
+          body.write(out);
+        }
+        out.flush();
+      } catch (java.net.SocketException refusedEarly) {
+        // The agent may answer and close before it has read the whole payload; the reply is
+        // still readable below.
       }
-      out.flush();
       DataInputStream in = new DataInputStream(socket.getInputStream());
       if (in.readUnsignedByte() == 0) {
+        if (operation == 5) {
+          for (int i = 0; i < 3; i++) {
+            in.readFully(new byte[in.readInt()]);
+          }
+        }
         return null;
       }
       byte[] message = new byte[in.readInt()];

@@ -7,10 +7,12 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"regexp"
 	"time"
 
 	"go.opentelemetry.io/obi/pkg/appolly/app"
 	"go.opentelemetry.io/obi/pkg/config"
+	"go.opentelemetry.io/obi/pkg/internal/agentctl"
 )
 
 const (
@@ -20,7 +22,13 @@ const (
 
 // PatchTarget is implemented by targets whose runtime can host live patches (Java).
 type PatchTarget interface {
-	AttachLivePatch(pid app.PID, patch *config.PatchSpec, expiresAt time.Time, cookie uint64) (io.Closer, error)
+	AttachLivePatch(pid app.PID, patch *config.PatchSpec, expiresAt time.Time, cookie uint64) (io.Closer, agentctl.PatchEvidence, error)
+}
+
+// PatchObserver is implemented by targets that can report what their observing patches counted.
+// A counter missing from the reply is unknown to the caller, not zero.
+type PatchObserver interface {
+	ReadPatchCounters(pid app.PID) (agentctl.Counters, error)
 }
 
 type patchKey struct {
@@ -42,10 +50,10 @@ type patchAttachment struct {
 func patchExpiries(prior ruleState, rule config.DynamicInstrumentationRule) map[string]time.Time {
 	expiries := make(map[string]time.Time, len(rule.Patches))
 	for _, spec := range rule.Patches {
-		target := spec.Target()
+		target := spec.Key()
 		expiries[target] = time.Now().Add(spec.TTL)
 		for _, old := range prior.definition.Patches {
-			if old.Target() == target && reflect.DeepEqual(old, spec) {
+			if old.Key() == target && reflect.DeepEqual(old, spec) {
 				if kept, ok := prior.patchExpiry[target]; ok {
 					expiries[target] = kept
 				}
@@ -63,19 +71,28 @@ func (m *Manager) reconcilePatchesLocked(pid int, rule ruleState, desired map[pa
 	bound, ready := m.targets[pid]
 	for _, spec := range rule.definition.Patches {
 		result := m.resultLocked(pid, spec.Target(), "")
-		key := patchKey{pid: pid, target: spec.Target()}
+		key := patchKey{pid: pid, target: spec.Key()}
 		prior, conflict := desired[key]
+		expired := !ready || !time.Now().Before(rule.patchExpiry[spec.Key()])
 		switch {
 		case !ready:
 			result.Status = "pending"
 		case m.targetGoneLocked(pid, bound):
 			result.Status, result.Error = "error", ErrTargetGone.Error()
+		case expired && ready:
+			// An expired rule asks for nothing: it neither keeps a patch alive nor conflicts
+			// with a live rule for the same method.
+			result.Status = patchStatusExpired
+			if current := m.patches[key]; current != nil && reflect.DeepEqual(current.spec, spec) {
+				result.Identity = current.result.Identity
+			}
 		case conflict && !reflect.DeepEqual(prior, spec):
 			result.Status, result.Error = "error", "patch already requested with a different definition"
 		default:
 			desired[key] = spec
-			result = m.ensurePatchLocked(key, bound, spec, rule.patchExpiry[spec.Target()], result)
+			result = m.ensurePatchLocked(key, bound, spec, rule.patchExpiry[spec.Key()], result)
 		}
+		result.patchKey, result.observing = spec.Key(), spec.Observing()
 		results = append(results, result)
 	}
 	return results
@@ -94,6 +111,7 @@ func (m *Manager) ensurePatchLocked(key patchKey, bound target, spec config.Patc
 		if expired {
 			result.Status = patchStatusExpired
 		}
+		result.Identity = current.result.Identity
 		current.result = result
 		return result
 	}
@@ -111,19 +129,31 @@ func (m *Manager) ensurePatchLocked(key patchKey, bound target, spec config.Patc
 		return result
 	}
 	m.nextCookie++
-	link, err := patcher.AttachLivePatch(app.PID(key.pid), &spec, expiresAt, m.nextCookie)
+	link, evidence, err := patcher.AttachLivePatch(app.PID(key.pid), &spec, expiresAt, m.nextCookie)
 	if err == nil && current != nil {
 		if err = current.link.Close(); err != nil {
 			_ = link.Close()
 		}
 	}
 	if err != nil {
-		result.Status, result.Error = "error", err.Error()
+		result.Status, result.Error, result.Reason = "error", err.Error(), refusalReason(err)
 		return result
 	}
 	result.Status = patchStatusAttached
+	result.Identity = &evidence
 	m.patches[key] = &patchAttachment{cookie: m.nextCookie, spec: spec, result: result, link: link}
 	return result
+}
+
+// refusalPattern matches the agent's "PatchRefusal <REASON>: detail" error text.
+var refusalPattern = regexp.MustCompile(`PatchRefusal ([A-Z_]+):`)
+
+// refusalReason extracts the stable refusal code from an agent error, or "" if it is not one.
+func refusalReason(err error) string {
+	if match := refusalPattern.FindStringSubmatch(err.Error()); match != nil {
+		return match[1]
+	}
+	return ""
 }
 
 func (m *Manager) removeStalePatchesLocked(desired map[patchKey]config.PatchSpec) error {

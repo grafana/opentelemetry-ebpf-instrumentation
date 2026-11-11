@@ -201,24 +201,54 @@ func (t *DynamicTarget) AttachLiveSpan(pid app.PID, _ uint32, span *config.Custo
 
 // AttachLivePatch makes the method return the patch value until expiresAt. The agent enforces
 // the deadline itself, so the patch ends on time even if OBI dies.
-func (t *DynamicTarget) AttachLivePatch(pid app.PID, patch *config.PatchSpec, expiresAt time.Time, cookie uint64) (io.Closer, error) {
+//
+// The agent resolves the target to one method in one class loader and verifies whatever identity
+// the patch asserts; the V0 evidence it resolved comes back with the link.
+func (t *DynamicTarget) AttachLivePatch(pid app.PID, patch *config.PatchSpec, expiresAt time.Time, cookie uint64) (io.Closer, agentctl.PatchEvidence, error) {
 	if pid != t.pid {
-		return nil, errors.New("java target PID mismatch")
+		return nil, agentctl.PatchEvidence{}, errors.New("java target PID mismatch")
 	}
 	t.probesMu.Lock()
 	defer t.probesMu.Unlock()
-	err := t.attachPatchCommand(t.ctx, agentctl.Patch{
-		Class:      patch.Class,
-		Method:     patch.Method,
-		Descriptor: patch.Descriptor,
-		Value:      patch.Value,
-		ExpiresAt:  expiresAt,
+	var predicate *agentctl.Predicate
+	if patch.Predicate != nil {
+		predicate = &agentctl.Predicate{Argument: patch.Predicate.Argument, Contains: patch.Predicate.Contains}
+	}
+	evidence, err := t.attachPatchCommand(t.ctx, agentctl.Patch{
+		Observe:         patch.Observing(),
+		Predicate:       predicate,
+		Class:           patch.Class,
+		Method:          patch.Method,
+		Descriptor:      patch.Descriptor,
+		Value:           patch.Value,
+		ExpiresAt:       expiresAt,
+		RequireIdentity: patch.RequireIdentity,
+		Loader:          patch.Loader,
+		ArtifactSHA256:  patch.ArtifactSHA256,
+		Fingerprint:     patch.Fingerprint,
 	}, cookie)
 	if err != nil {
 		_, detachErr := t.command(context.WithoutCancel(t.ctx), javaDetachMethod, "", cookie)
-		return nil, errors.Join(err, detachErr)
+		return nil, agentctl.PatchEvidence{}, errors.Join(err, detachErr)
 	}
-	return &javaPatch{target: t, cookie: cookie}, nil
+	return &javaPatch{target: t, cookie: cookie}, evidence, nil
+}
+
+// ReadPatchCounters asks the agent for the counters of its observing patches. Anything that is
+// not in the reply (detached, expired, or an agent that restarted) is unknown to the caller.
+func (t *DynamicTarget) ReadPatchCounters(pid app.PID) (agentctl.Counters, error) {
+	if pid != t.pid {
+		return agentctl.Counters{}, errors.New("java target PID mismatch")
+	}
+	t.probesMu.Lock()
+	defer t.probesMu.Unlock()
+	var counters agentctl.Counters
+	_, err := t.withSession(t.ctx, func(ctx context.Context, endpoint javaEndpoint) ([]string, error) {
+		var err error
+		counters, err = agentctl.ExchangeCounters(ctx, t.pid, endpoint.port, endpoint.token, t.session)
+		return nil, err
+	})
+	return counters, err
 }
 
 type javaPatch struct {
@@ -269,11 +299,14 @@ func (t *DynamicTarget) command(parent context.Context, operation byte, method s
 	})
 }
 
-func (t *DynamicTarget) attachPatchCommand(parent context.Context, patch agentctl.Patch, cookie uint64) error {
+func (t *DynamicTarget) attachPatchCommand(parent context.Context, patch agentctl.Patch, cookie uint64) (agentctl.PatchEvidence, error) {
+	var evidence agentctl.PatchEvidence
 	_, err := t.withSession(parent, func(ctx context.Context, endpoint javaEndpoint) ([]string, error) {
-		return nil, agentctl.ExchangePatch(ctx, t.pid, endpoint.port, endpoint.token, t.session, patch, cookie)
+		var err error
+		evidence, err = agentctl.ExchangePatch(ctx, t.pid, endpoint.port, endpoint.token, t.session, patch, cookie)
+		return nil, err
 	})
-	return err
+	return evidence, err
 }
 
 // withSession checks the target's identity and claims the agent session before running call.

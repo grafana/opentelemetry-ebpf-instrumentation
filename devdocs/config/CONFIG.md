@@ -850,9 +850,15 @@ PatchSpec makes one Java method return a constant String until its TTL ends. The
 | Field | Type | Values | Description |
 |---|---|---|---|
 | `action` | `string` |  |  |
+| `artifact_sha256` | `string` |  |  |
 | `class` | `string` |  |  |
 | `descriptor` | `string` |  |  |
+| `fingerprint` | `string` |  |  |
+| `loader` | `string` |  | Selects one class loader of the target JVM ("loader:<n>"); the agent lists the candidates when more than one loader defines the class. ArtifactSHA256 is the SHA-256 of the jar the class was loaded from and Fingerprint is the canonical-v1 fingerprint of the method (64 hex digits each). Whatever is set is verified; a mismatch refuses the patch. |
 | `method` | `string` |  |  |
+| `mode` | `string` |  | Is "enforce" (the default: return Value) or "observe": count the calls of the exact method without changing it. Counters come back in the rule status, where "unknown" (no or vanished counters) is never shown as zero. |
+| `predicate` | [`PatchPredicate`](#patchpredicate) |  | , observe mode only, also counts the calls whose String argument contains a literal. It is a test-only closed form: one parameter, one literal, no pattern language. |
+| `require_identity` | `boolean` |  | Refuses the patch unless loader, artifact_sha256 and fingerprint are all set. |
 | `ttl` | `duration` | `30s`, `5m`, `1ms`, etc |  |
 | `value` | `string` |  |  |
 
@@ -897,6 +903,15 @@ NumericRange defines numeric comparison criteria for a rule match condition. All
 | `less_equals` | `integer` |  |  |
 | `less_than` | `integer` |  |  |
 | `not_equals` | `integer` |  |  |
+
+### PatchPredicate
+
+PatchPredicate counts a call as a hit when the String parameter at Argument (0 is the first parameter, never the receiver) contains Contains.
+
+| Field | Type | Values | Description |
+|---|---|---|---|
+| `argument` | `integer` |  |  |
+| `contains` | `string` |  |  |
 
 ### CustomSpanMatch
 

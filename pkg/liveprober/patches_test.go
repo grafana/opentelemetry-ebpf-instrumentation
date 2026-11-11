@@ -15,6 +15,7 @@ import (
 
 	"go.opentelemetry.io/obi/pkg/appolly/app"
 	"go.opentelemetry.io/obi/pkg/config"
+	"go.opentelemetry.io/obi/pkg/internal/agentctl"
 )
 
 const patchRuleJSON = `{"service":[{"target_pids":[123]}],"patches":[{"class":"org.apache.logging.log4j.core.lookup.JndiLookup","method":"lookup","descriptor":"(Lorg/apache/logging/log4j/core/LogEvent;Ljava/lang/String;)Ljava/lang/String;","action":"return","value":"%s","ttl":"30s"}]}`
@@ -26,19 +27,21 @@ type attachedPatch struct {
 	link      *fakeLink
 }
 
+var testEvidence = agentctl.PatchEvidence{Loader: "loader:1", ArtifactSHA256: strings.Repeat("a", 64), Fingerprint: strings.Repeat("b", 64)}
+
 type patchingTracer struct {
 	resolvingTracer
 	patches []*attachedPatch
 	err     error
 }
 
-func (p *patchingTracer) AttachLivePatch(_ app.PID, patch *config.PatchSpec, expiresAt time.Time, cookie uint64) (io.Closer, error) {
+func (p *patchingTracer) AttachLivePatch(_ app.PID, patch *config.PatchSpec, expiresAt time.Time, cookie uint64) (io.Closer, agentctl.PatchEvidence, error) {
 	if p.err != nil {
-		return nil, p.err
+		return nil, agentctl.PatchEvidence{}, p.err
 	}
 	attached := &attachedPatch{spec: *patch, expiresAt: expiresAt, cookie: cookie, link: &fakeLink{}}
 	p.patches = append(p.patches, attached)
-	return attached.link, nil
+	return attached.link, testEvidence, nil
 }
 
 func patchRule(t *testing.T, value string) config.DynamicInstrumentationRule {
@@ -168,4 +171,110 @@ func TestPatchRulesRejectInvalidSpecs(t *testing.T) {
 
 		require.Error(t, err, name)
 	}
+}
+
+const identityRuleJSON = `{"service":[{"target_pids":[123]}],"patches":[{"class":"a.B","method":"lookup","descriptor":"(Ljava/lang/String;)Ljava/lang/String;","action":"return","value":"none","ttl":"30s","loader":"loader:1","artifact_sha256":"%s","fingerprint":"%s","require_identity":true}]}`
+
+func TestPatchStatusReportsTheV0EvidenceTheAgentResolved(t *testing.T) {
+	tracer := &patchingTracer{}
+	m := patchManager(t, tracer)
+	rule, err := RuleJSON([]byte(fmt.Sprintf(identityRuleJSON, strings.Repeat("a", 64), strings.Repeat("b", 64))))
+	require.NoError(t, err)
+
+	results, err := m.ApplyRule("fix", rule)
+
+	require.NoError(t, err)
+	require.Equal(t, "attached", results[0].Status)
+	require.NotNil(t, results[0].Identity)
+	require.Equal(t, testEvidence, *results[0].Identity)
+	sent := tracer.patches[0].spec
+	require.True(t, sent.RequireIdentity)
+	require.Equal(t, "loader:1", sent.Loader)
+	require.Equal(t, strings.Repeat("a", 64), sent.ArtifactSHA256)
+	require.Equal(t, strings.Repeat("b", 64), sent.Fingerprint)
+
+	results, err = m.ApplyRule("fix", rule)
+	require.NoError(t, err)
+	require.Len(t, tracer.patches, 1, "an identical rule must not attach again")
+	require.NotNil(t, results[0].Identity, "the evidence must survive a re-apply")
+	require.Equal(t, testEvidence, *results[0].Identity)
+}
+
+func TestPatchRefusalIsReportedWithItsReason(t *testing.T) {
+	tracer := &patchingTracer{err: errors.New("PatchRefusal AMBIGUOUS_LOADER: 2 loaders define a.B.lookup; choose one with loader: loader:1 (...), loader:2 (...)")}
+	m := patchManager(t, tracer)
+
+	results, err := m.ApplyRule("fix", patchRule(t, "none"))
+
+	require.NoError(t, err)
+	require.Equal(t, "error", results[0].Status)
+	require.Equal(t, "AMBIGUOUS_LOADER", results[0].Reason)
+	require.Contains(t, results[0].Error, "loader:2")
+	require.Nil(t, results[0].Identity)
+}
+
+func TestARefusalWithoutACodeHasNoReason(t *testing.T) {
+	tracer := &patchingTracer{err: errors.New("connection refused")}
+	m := patchManager(t, tracer)
+
+	results, err := m.ApplyRule("fix", patchRule(t, "none"))
+
+	require.NoError(t, err)
+	require.Empty(t, results[0].Reason)
+}
+
+const loaderPatchRuleJSON = `{"service":[{"target_pids":[123]}],"patches":[{"class":"app.Sample","method":"lookup","descriptor":"(Ljava/lang/String;)Ljava/lang/String;","action":"return","value":"%s","ttl":"30s","loader":"%s"}]}`
+
+func loaderPatchRule(t *testing.T, value, loader string) config.DynamicInstrumentationRule {
+	t.Helper()
+	rule, err := RuleJSON([]byte(fmt.Sprintf(loaderPatchRuleJSON, value, loader)))
+	require.NoError(t, err)
+	return rule
+}
+
+func TestDeletingTheLivePatchRuleDetachesEvenWhileAnExpiredRuleTargetsTheSameMethod(t *testing.T) {
+	tracer := &patchingTracer{}
+	m := patchManager(t, tracer)
+	_, err := m.ApplyRule("live", patchRule(t, "two"))
+	require.NoError(t, err)
+	old := patchRule(t, "one")
+	m.rules["api/old"] = ruleState{definition: old, patchExpiry: patchExpiries(ruleState{}, old)}
+	setRuleExpiry(m, "old", time.Now().Add(-time.Second))
+
+	require.NoError(t, m.DeleteRule("live"))
+
+	require.True(t, tracer.patches[0].link.closed, "the deleted rule's patch must be detached; an expired rule asks for nothing")
+}
+
+func TestAnExpiredRuleDoesNotBlockALiveRuleForTheSameMethod(t *testing.T) {
+	tracer := &patchingTracer{}
+	m := patchManager(t, tracer)
+	old := patchRule(t, "one")
+	m.rules["api/old"] = ruleState{definition: old, patchExpiry: patchExpiries(ruleState{}, old)}
+	setRuleExpiry(m, "old", time.Now().Add(-time.Second))
+
+	for range 20 { // reconcile order over the rules map is random
+		results, err := m.ApplyRule("live", patchRule(t, "two"))
+		require.NoError(t, err)
+		require.Equal(t, "attached", results[0].Status, results[0].Error)
+	}
+}
+
+func TestPatchesForTheSameMethodInDifferentLoadersDoNotCollide(t *testing.T) {
+	tracer := &patchingTracer{}
+	m := patchManager(t, tracer)
+
+	for range 20 {
+		resB, err := m.ApplyRule("b", loaderPatchRule(t, "patched-B", "loader:2"))
+		require.NoError(t, err)
+		require.Equal(t, "attached", resB[0].Status, resB[0].Error)
+		resC, err := m.ApplyRule("c", loaderPatchRule(t, "patched-C", "loader:3"))
+		require.NoError(t, err)
+		require.Equal(t, "attached", resC[0].Status, resC[0].Error)
+	}
+	require.Len(t, tracer.patches, 2, "each loader's patch attaches once")
+
+	require.NoError(t, m.DeleteRule("b"))
+	require.True(t, tracer.patches[0].link.closed, "deleting loader 2's rule detaches loader 2's patch")
+	require.False(t, tracer.patches[1].link.closed, "and leaves loader 3's patch attached")
 }

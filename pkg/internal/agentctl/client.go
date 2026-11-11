@@ -25,6 +25,8 @@ const (
 	Detach
 	Claim
 	AttachPatch
+	// ReadPatchCounters returns the counters of the observing patches that are still installed.
+	ReadPatchCounters
 )
 
 // Patch is the payload of the AttachPatch operation.
@@ -34,6 +36,52 @@ type Patch struct {
 	Descriptor string
 	Value      string
 	ExpiresAt  time.Time
+	// Identity assertions the agent verifies before patching. Empty fields are not asserted.
+	// With RequireIdentity the agent refuses a patch that does not assert all three.
+	RequireIdentity bool
+	Loader          string
+	ArtifactSHA256  string
+	Fingerprint     string
+	// Observe makes the patch count calls instead of returning Value; Predicate, if set, also
+	// counts the calls whose String argument contains the literal.
+	Observe   bool
+	Predicate *Predicate
+}
+
+// Predicate is the closed observe-mode predicate: parameter Argument contains Contains.
+type Predicate struct {
+	Argument int
+	Contains string
+}
+
+// PatchCounters is what one observing patch has counted. A zero FirstSeen/LastSeen means the
+// method was not called in the interval; it never means the counters are unknown (an unknown
+// counter has no entry at all).
+type PatchCounters struct {
+	Cookie        uint64
+	Calls         uint64
+	PredicateHits uint64
+	HasPredicate  bool
+	FirstSeen     time.Time
+	LastSeen      time.Time
+	// Since is when the agent started observing, on the agent's clock.
+	Since time.Time
+}
+
+// Counters is the reply of ReadPatchCounters. Now is the agent's clock at the time of the read,
+// so the interval Since..Now is exact even if the two clocks differ.
+type Counters struct {
+	Now     time.Time
+	Patches []PatchCounters
+}
+
+// PatchEvidence is the V0 evidence the agent resolved for the one method it patched: which class
+// loader, which artifact (SHA-256 of the jar) and which method fingerprint. An empty field means
+// the agent could not establish it (and the patch did not assert it).
+type PatchEvidence struct {
+	Loader         string `json:"loader"`
+	ArtifactSHA256 string `json:"artifact_sha256,omitempty"`
+	Fingerprint    string `json:"fingerprint,omitempty"`
 }
 
 const patchActionReturn byte = 1
@@ -62,7 +110,8 @@ func Exchange(ctx context.Context, pid app.PID, port uint32, token, session [16]
 }
 
 // ExchangePatch sends the AttachPatch operation, which Java agents from before it existed reject.
-func ExchangePatch(ctx context.Context, pid app.PID, port uint32, token, session [16]byte, patch Patch, cookie uint64) error {
+// A refused or mismatched target is an error whose text starts with "PatchRefusal <REASON>:".
+func ExchangePatch(ctx context.Context, pid app.PID, port uint32, token, session [16]byte, patch Patch, cookie uint64) (PatchEvidence, error) {
 	var request bytes.Buffer
 	writeString(&request, patch.Class)
 	writeString(&request, patch.Method)
@@ -71,12 +120,85 @@ func ExchangePatch(ctx context.Context, pid app.PID, port uint32, token, session
 	writeString(&request, patch.Value)
 	_ = binary.Write(&request, binary.BigEndian, patch.ExpiresAt.UnixMilli())
 	_ = binary.Write(&request, binary.BigEndian, cookie)
+	request.WriteByte(boolByte(patch.RequireIdentity))
+	writeString(&request, patch.Loader)
+	writeString(&request, patch.ArtifactSHA256)
+	writeString(&request, patch.Fingerprint)
+	request.WriteByte(boolByte(patch.Observe))
+	predicateArgument, predicateContains := int32(-1), ""
+	if patch.Predicate != nil {
+		predicateArgument, predicateContains = int32(patch.Predicate.Argument), patch.Predicate.Contains
+	}
+	_ = binary.Write(&request, binary.BigEndian, predicateArgument)
+	writeString(&request, predicateContains)
 	connection, err := send(ctx, pid, port, token, session, AttachPatch, request.Bytes())
 	if err != nil {
-		return err
+		return PatchEvidence{}, err
 	}
 	defer connection.Close()
-	return readStatus(connection)
+	if err := readStatus(connection); err != nil {
+		return PatchEvidence{}, err
+	}
+	var evidence PatchEvidence
+	for _, field := range []*string{&evidence.Loader, &evidence.ArtifactSHA256, &evidence.Fingerprint} {
+		if *field, err = ReadString(connection); err != nil {
+			return PatchEvidence{}, fmt.Errorf("reading patch evidence: %w", err)
+		}
+	}
+	return evidence, nil
+}
+
+// ExchangeCounters reads the counters of every observing patch the agent still has.
+func ExchangeCounters(ctx context.Context, pid app.PID, port uint32, token, session [16]byte) (Counters, error) {
+	connection, err := send(ctx, pid, port, token, session, ReadPatchCounters, nil)
+	if err != nil {
+		return Counters{}, err
+	}
+	defer connection.Close()
+	if err := readStatus(connection); err != nil {
+		return Counters{}, err
+	}
+	var now int64
+	var count uint32
+	if err := binary.Read(connection, binary.BigEndian, &now); err != nil {
+		return Counters{}, fmt.Errorf("reading counters: %w", err)
+	}
+	if err := binary.Read(connection, binary.BigEndian, &count); err != nil {
+		return Counters{}, fmt.Errorf("reading counters: %w", err)
+	}
+	if count > 100000 {
+		return Counters{}, fmt.Errorf("agent counter list exceeds limit: %d", count)
+	}
+	result := Counters{Now: time.UnixMilli(now), Patches: make([]PatchCounters, 0, count)}
+	for range count {
+		var row struct {
+			Cookie, Calls, Hits uint64
+			HasPredicate        uint8
+			First, Last, Since  int64
+		}
+		if err := binary.Read(connection, binary.BigEndian, &row); err != nil {
+			return Counters{}, fmt.Errorf("reading counters: %w", err)
+		}
+		entry := PatchCounters{
+			Cookie: row.Cookie, Calls: row.Calls, PredicateHits: row.Hits,
+			HasPredicate: row.HasPredicate != 0, Since: time.UnixMilli(row.Since),
+		}
+		if row.First != 0 {
+			entry.FirstSeen = time.UnixMilli(row.First)
+		}
+		if row.Last != 0 {
+			entry.LastSeen = time.UnixMilli(row.Last)
+		}
+		result.Patches = append(result.Patches, entry)
+	}
+	return result, nil
+}
+
+func boolByte(value bool) byte {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 // send connects inside the target's network namespace and writes one request. The returned

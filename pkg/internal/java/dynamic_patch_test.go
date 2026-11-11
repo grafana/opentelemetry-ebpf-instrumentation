@@ -6,12 +6,14 @@
 package javaagent
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"io"
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +24,7 @@ import (
 	"go.opentelemetry.io/obi/pkg/config"
 	ebpfcommon "go.opentelemetry.io/obi/pkg/ebpf/common"
 	"go.opentelemetry.io/obi/pkg/ebpf/ringbuf"
+	"go.opentelemetry.io/obi/pkg/internal/agentctl"
 	"go.opentelemetry.io/obi/pkg/liveprober"
 )
 
@@ -37,6 +40,13 @@ type patchRequest struct {
 	value      string
 	expiresAt  int64
 	cookie     uint64
+	strict     bool
+	loader     string
+	artifact   string
+	print      string
+	observe    bool
+	predicate  int32
+	contains   string
 }
 
 // fakePatchAgent speaks the agent's control protocol for claim, attach-patch and detach.
@@ -44,6 +54,8 @@ type fakePatchAgent struct {
 	mu       sync.Mutex
 	requests []patchRequest
 	attachOK bool
+	// counters is the body (after the status byte) of the reply to the counters operation.
+	counters []byte
 }
 
 func (f *fakePatchAgent) serve(t *testing.T, listener net.Listener) {
@@ -79,6 +91,17 @@ func (f *fakePatchAgent) handle(conn net.Conn) {
 		request.value, _ = readJavaString(conn)
 		_ = binary.Read(conn, binary.BigEndian, &request.expiresAt)
 		_ = binary.Read(conn, binary.BigEndian, &request.cookie)
+		var strict [1]byte
+		_, _ = io.ReadFull(conn, strict[:])
+		request.strict = strict[0] != 0
+		request.loader, _ = readJavaString(conn)
+		request.artifact, _ = readJavaString(conn)
+		request.print, _ = readJavaString(conn)
+		var observe [1]byte
+		_, _ = io.ReadFull(conn, observe[:])
+		request.observe = observe[0] != 0
+		_ = binary.Read(conn, binary.BigEndian, &request.predicate)
+		request.contains, _ = readJavaString(conn)
 	}
 	f.mu.Lock()
 	f.requests = append(f.requests, request)
@@ -86,6 +109,15 @@ func (f *fakePatchAgent) handle(conn net.Conn) {
 	f.mu.Unlock()
 	if ok {
 		_, _ = conn.Write([]byte{0})
+		if request.operation == agentctl.ReadPatchCounters {
+			_, _ = conn.Write(f.counters)
+		}
+		if request.operation == 5 {
+			for _, text := range []string{"loader:1", strings.Repeat("a", 64), strings.Repeat("b", 64)} {
+				_ = binary.Write(conn, binary.BigEndian, uint32(len(text)))
+				_, _ = io.WriteString(conn, text)
+			}
+		}
 		return
 	}
 	message := "Unknown dynamic control operation"
@@ -130,18 +162,65 @@ func patchTarget(t *testing.T, agent *fakePatchAgent) *DynamicTarget {
 func TestAttachLivePatchSendsOp5AndCloseDetaches(t *testing.T) {
 	agent := &fakePatchAgent{attachOK: true}
 	target := patchTarget(t, agent)
-	patch := &config.PatchSpec{Class: "a.B", Method: "lookup", Descriptor: "(Ljava/lang/String;)Ljava/lang/String;", Action: config.PatchActionReturn, Value: "none", TTL: time.Minute}
+	patch := &config.PatchSpec{
+		Class: "a.B", Method: "lookup", Descriptor: "(Ljava/lang/String;)Ljava/lang/String;", Action: config.PatchActionReturn, Value: "none", TTL: time.Minute,
+		Loader: "loader:1", ArtifactSHA256: strings.Repeat("a", 64), Fingerprint: strings.Repeat("b", 64), RequireIdentity: true,
+	}
 	expiresAt := time.UnixMilli(1_800_000_000_000)
 
-	link, err := target.AttachLivePatch(target.pid, patch, expiresAt, 9)
+	link, evidence, err := target.AttachLivePatch(target.pid, patch, expiresAt, 9)
 
 	require.NoError(t, err)
+	require.Equal(t, agentctl.PatchEvidence{Loader: "loader:1", ArtifactSHA256: strings.Repeat("a", 64), Fingerprint: strings.Repeat("b", 64)}, evidence)
 	require.Equal(t, []byte{javaClaimSession, 5}, agent.operations())
 	sent := agent.requests[1]
-	require.Equal(t, patchRequest{operation: 5, class: "a.B", method: "lookup", descriptor: patch.Descriptor, value: "none", expiresAt: expiresAt.UnixMilli(), cookie: 9}, sent)
+	require.Equal(t, patchRequest{
+		operation: 5, class: "a.B", method: "lookup", descriptor: patch.Descriptor, value: "none", expiresAt: expiresAt.UnixMilli(), cookie: 9,
+		strict: true, loader: "loader:1", artifact: strings.Repeat("a", 64), print: strings.Repeat("b", 64),
+		predicate: -1,
+	}, sent)
 	require.NoError(t, link.Close())
 	require.Equal(t, []byte{javaClaimSession, 5, javaDetachMethod}, agent.operations())
 	require.Equal(t, uint64(9), agent.requests[2].cookie)
+}
+
+func TestAttachLivePatchInObserveModeSendsTheModeAndPredicate(t *testing.T) {
+	agent := &fakePatchAgent{attachOK: true}
+	target := patchTarget(t, agent)
+	patch := &config.PatchSpec{
+		Class: "a.B", Method: "lookup", Descriptor: "(Ljava/lang/Object;Ljava/lang/String;)Ljava/lang/String;", TTL: time.Minute,
+		Mode: config.PatchModeObserve, Predicate: &config.PatchPredicate{Argument: 1, Contains: "canary.test"},
+	}
+
+	_, _, err := target.AttachLivePatch(target.pid, patch, time.UnixMilli(1_800_000_000_000), 4)
+
+	require.NoError(t, err)
+	sent := agent.requests[1]
+	require.True(t, sent.observe)
+	require.Equal(t, int32(1), sent.predicate)
+	require.Equal(t, "canary.test", sent.contains)
+}
+
+func TestReadPatchCountersAsksTheAgentAndReturnsWhatItHolds(t *testing.T) {
+	var body bytes.Buffer
+	_ = binary.Write(&body, binary.BigEndian, int64(1_700_000_005_000))
+	_ = binary.Write(&body, binary.BigEndian, uint32(1))
+	for _, field := range []any{uint64(4), uint64(3), uint64(1), uint8(1), int64(1_700_000_001_000), int64(1_700_000_003_000), int64(1_700_000_000_000)} {
+		_ = binary.Write(&body, binary.BigEndian, field)
+	}
+	agent := &fakePatchAgent{attachOK: true, counters: body.Bytes()}
+	target := patchTarget(t, agent)
+
+	counters, err := target.ReadPatchCounters(target.pid)
+
+	require.NoError(t, err)
+	require.Len(t, counters.Patches, 1)
+	require.Equal(t, uint64(4), counters.Patches[0].Cookie)
+	require.Equal(t, uint64(3), counters.Patches[0].Calls)
+	require.Equal(t, uint64(1), counters.Patches[0].PredicateHits)
+	require.Equal(t, agentctl.ReadPatchCounters, agent.operations()[len(agent.operations())-1])
+	_, err = target.ReadPatchCounters(target.pid + 1)
+	require.ErrorContains(t, err, "PID mismatch")
 }
 
 func TestAttachLivePatchOnAnOlderAgentFailsCleanly(t *testing.T) {
@@ -149,7 +228,7 @@ func TestAttachLivePatchOnAnOlderAgentFailsCleanly(t *testing.T) {
 	target := patchTarget(t, agent)
 	patch := &config.PatchSpec{Class: "a.B", Method: "lookup", Descriptor: "()Ljava/lang/String;", Action: config.PatchActionReturn, TTL: time.Minute}
 
-	link, err := target.AttachLivePatch(target.pid, patch, time.Now().Add(time.Minute), 9)
+	link, _, err := target.AttachLivePatch(target.pid, patch, time.Now().Add(time.Minute), 9)
 
 	require.ErrorContains(t, err, "Unknown dynamic control operation")
 	require.Nil(t, link)

@@ -15,16 +15,23 @@ class PatchRuntimeTest {
   private static final String STRING_DESCRIPTOR = "(Ljava/lang/String;)Ljava/lang/String;";
   private static final String TWO_ARG_DESCRIPTOR = "(Ljava/lang/String;I)Ljava/lang/String;";
   private static final long FAR_FUTURE = TimeUnit.HOURS.toNanos(1);
+  private static final ClassLoader LOADER = Owner.class.getClassLoader();
 
   @AfterEach
   void clear() {
-    PatchRuntime.remove(Owner.class.getName(), "lookup", STRING_DESCRIPTOR, 1);
+    PatchRuntime.remove(LOADER, Owner.class.getName(), "lookup", STRING_DESCRIPTOR, 1);
   }
 
   @Test
   void returnsConstantOnlyForTheExactDescriptor() {
     PatchRuntime.add(
-        Owner.class.getName(), "lookup", STRING_DESCRIPTOR, "fixed", 1, nowPlus(FAR_FUTURE));
+        LOADER,
+        Owner.class.getName(),
+        "lookup",
+        STRING_DESCRIPTOR,
+        "fixed",
+        1,
+        nowPlus(FAR_FUTURE));
 
     assertEquals("fixed", PatchRuntime.enter(Owner.class, "lookup", STRING_DESCRIPTOR));
     assertNull(PatchRuntime.enter(Owner.class, "lookup", TWO_ARG_DESCRIPTOR));
@@ -33,7 +40,8 @@ class PatchRuntimeTest {
 
   @Test
   void goesInertAtTheMonotonicDeadline() {
-    PatchRuntime.add(Owner.class.getName(), "lookup", STRING_DESCRIPTOR, "fixed", 1, nowPlus(-1));
+    PatchRuntime.add(
+        LOADER, Owner.class.getName(), "lookup", STRING_DESCRIPTOR, "fixed", 1, nowPlus(-1));
 
     assertNull(PatchRuntime.enter(Owner.class, "lookup", STRING_DESCRIPTOR));
   }
@@ -41,13 +49,41 @@ class PatchRuntimeTest {
   @Test
   void removeOnlyDeletesTheMatchingCookie() {
     PatchRuntime.add(
-        Owner.class.getName(), "lookup", STRING_DESCRIPTOR, "fixed", 2, nowPlus(FAR_FUTURE));
+        LOADER,
+        Owner.class.getName(),
+        "lookup",
+        STRING_DESCRIPTOR,
+        "fixed",
+        2,
+        nowPlus(FAR_FUTURE));
 
-    PatchRuntime.remove(Owner.class.getName(), "lookup", STRING_DESCRIPTOR, 1);
+    PatchRuntime.remove(LOADER, Owner.class.getName(), "lookup", STRING_DESCRIPTOR, 1);
     assertEquals("fixed", PatchRuntime.enter(Owner.class, "lookup", STRING_DESCRIPTOR));
 
-    PatchRuntime.remove(Owner.class.getName(), "lookup", STRING_DESCRIPTOR, 2);
+    PatchRuntime.remove(LOADER, Owner.class.getName(), "lookup", STRING_DESCRIPTOR, 2);
     assertNull(PatchRuntime.enter(Owner.class, "lookup", STRING_DESCRIPTOR));
+  }
+
+  @Test
+  void aSameNamedClassInAnotherLoaderIsNotPatched() throws Exception {
+    ClassLoader other = new java.net.URLClassLoader(new java.net.URL[0], null);
+    PatchRuntime.add(
+        LOADER,
+        Owner.class.getName(),
+        "lookup",
+        STRING_DESCRIPTOR,
+        "fixed",
+        1,
+        nowPlus(FAR_FUTURE));
+
+    assertEquals("fixed", PatchRuntime.enter(Owner.class, "lookup", STRING_DESCRIPTOR));
+    PatchRuntime.add(
+        other, Owner.class.getName(), "lookup", STRING_DESCRIPTOR, "other", 2, nowPlus(FAR_FUTURE));
+    assertEquals("fixed", PatchRuntime.enter(Owner.class, "lookup", STRING_DESCRIPTOR));
+
+    PatchRuntime.remove(LOADER, Owner.class.getName(), "lookup", STRING_DESCRIPTOR, 1);
+    assertNull(PatchRuntime.enter(Owner.class, "lookup", STRING_DESCRIPTOR));
+    PatchRuntime.remove(other, Owner.class.getName(), "lookup", STRING_DESCRIPTOR, 2);
   }
 
   @Test

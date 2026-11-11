@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/obi/pkg/appolly/services"
 	"go.opentelemetry.io/obi/pkg/config"
 	"go.opentelemetry.io/obi/pkg/export/imetrics"
+	"go.opentelemetry.io/obi/pkg/internal/agentctl"
 )
 
 type SymbolResolver interface {
@@ -37,6 +38,20 @@ type ProbeResult struct {
 	ServiceNamespace string `json:"service_namespace"`
 	Status           string `json:"status"`
 	Error            string `json:"error,omitempty"`
+	// Reason is the stable code of a patch refusal (for example AMBIGUOUS_LOADER); Error has the
+	// detail.
+	Reason string `json:"reason,omitempty"`
+	// Identity is the V0 evidence of an attached patch: the loader, artifact and method
+	// fingerprint the agent resolved.
+	Identity *agentctl.PatchEvidence `json:"identity,omitempty"`
+	// Observation is what an observe-mode patch has counted, read from the agent when the status
+	// is requested. Counters that cannot be read (agent gone, patch detached or expired) are
+	// reported as state "unknown" with no numbers; they are never shown as zero.
+	Observation *Observation `json:"observation,omitempty"`
+
+	// patchKey and observing tie a patch result back to its attachment for the counter read.
+	patchKey  string
+	observing bool
 }
 
 type dynamicKey struct {
@@ -54,7 +69,7 @@ type ruleState struct {
 	matched    []int
 	definition config.DynamicInstrumentationRule
 	results    []ProbeResult
-	// patchExpiry holds the absolute expiry of each patch, keyed by PatchSpec.Target.
+	// patchExpiry holds the absolute expiry of each patch, keyed by PatchSpec.Key.
 	patchExpiry map[string]time.Time
 }
 
@@ -210,6 +225,20 @@ func (m *Manager) RuleResults(id string) ([]ProbeResult, <-chan struct{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return slices.Clone(m.rules["api/"+id].results), m.updated
+}
+
+// RuleStatus is RuleResults for a status read: observe-mode patches carry their current counters.
+// The second result is false if there is no such rule.
+func (m *Manager) RuleStatus(id string) ([]ProbeResult, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rule, ok := m.rules["api/"+id]
+	if !ok {
+		return nil, false
+	}
+	results := slices.Clone(rule.results)
+	m.observePatchesLocked(results)
+	return results, true
 }
 
 func (m *Manager) ruleIDsLocked() []string {

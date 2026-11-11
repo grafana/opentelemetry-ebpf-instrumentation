@@ -84,6 +84,8 @@ public final class DynamicControl {
             throw new IllegalStateException("OBI dynamic session has changed");
           }
           List<String> symbols = null;
+          PatchIdentity.Evidence evidence = null;
+          List<PatchObservation.Counters> counters = null;
           switch (operation) {
             case 1:
               symbols = instrumentation.symbols();
@@ -101,12 +103,33 @@ public final class DynamicControl {
               }
               break;
             case 5:
-              attachPatch(input);
+              evidence = attachPatch(input);
+              break;
+            case 6:
+              counters = instrumentation.counters();
               break;
             default:
               throw new IllegalArgumentException("Unknown dynamic control operation");
           }
           output.writeByte(0);
+          if (evidence != null) {
+            writeString(output, evidence.loader);
+            writeString(output, evidence.artifactSha256);
+            writeString(output, evidence.fingerprint);
+          }
+          if (counters != null) {
+            output.writeLong(System.currentTimeMillis());
+            output.writeInt(counters.size());
+            for (PatchObservation.Counters row : counters) {
+              output.writeLong(row.cookie);
+              output.writeLong(row.calls);
+              output.writeLong(row.predicateHits);
+              output.writeByte(row.hasPredicate ? 1 : 0);
+              output.writeLong(row.firstSeenMillis);
+              output.writeLong(row.lastSeenMillis);
+              output.writeLong(row.sinceMillis);
+            }
+          }
           if (symbols != null) {
             output.writeInt(symbols.size());
             for (String symbol : symbols) {
@@ -126,7 +149,7 @@ public final class DynamicControl {
     }
   }
 
-  private void attachPatch(DataInputStream input) throws Exception {
+  private PatchIdentity.Evidence attachPatch(DataInputStream input) throws Exception {
     String className = readString(input);
     String method = readString(input);
     String descriptor = readString(input);
@@ -134,10 +157,21 @@ public final class DynamicControl {
     String constant = readString(input);
     long expiresAtMillis = input.readLong();
     long cookie = input.readLong();
+    boolean strict = input.readUnsignedByte() != 0;
+    PatchIdentity.Request identity =
+        new PatchIdentity.Request(strict, readString(input), readString(input), readString(input));
+    int observe = input.readUnsignedByte();
+    int argument = input.readInt();
+    PatchObservation.Request mode =
+        new PatchObservation.Request(observe != 0, argument, readString(input));
+    if (observe > 1) {
+      throw new IllegalArgumentException("Unknown patch mode");
+    }
     if (action != PATCH_ACTION_RETURN) {
       throw new IllegalArgumentException("Unknown patch action");
     }
-    instrumentation.attachPatch(className, method, descriptor, constant, expiresAtMillis, cookie);
+    return instrumentation.attachPatch(
+        className, method, descriptor, constant, expiresAtMillis, cookie, identity, mode);
   }
 
   private static String readString(DataInputStream input) throws IOException {

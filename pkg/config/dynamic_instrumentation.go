@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 	"time"
 
@@ -36,7 +37,20 @@ type DynamicInstrumentationRule struct {
 
 const (
 	PatchActionReturn = "return"
+	PatchModeEnforce  = "enforce"
+	PatchModeObserve  = "observe"
 	MaxPatchTTL       = 24 * time.Hour
+
+	// MaxPredicateContainsBytes bounds the literal of an observe predicate.
+	MaxPredicateContainsBytes = 256
+	// MaxPredicateArgument is the highest argument index a predicate may read (a JVM method has at
+	// most 255 parameter slots).
+	MaxPredicateArgument = 254
+)
+
+var (
+	patchLoaderSelector = regexp.MustCompile(`^loader:(bootstrap|[0-9]{1,18})$`)
+	sha256Hex           = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 )
 
 // PatchSpec makes one Java method return a constant String until its TTL ends. The descriptor
@@ -48,24 +62,98 @@ type PatchSpec struct {
 	Action     string        `yaml:"action"`
 	Value      string        `yaml:"value"`
 	TTL        time.Duration `yaml:"ttl"`
+	// Loader selects one class loader of the target JVM ("loader:<n>"); the agent lists the
+	// candidates when more than one loader defines the class. ArtifactSHA256 is the SHA-256 of
+	// the jar the class was loaded from and Fingerprint is the canonical-v1 fingerprint of the
+	// method (64 hex digits each). Whatever is set is verified; a mismatch refuses the patch.
+	Loader         string `yaml:"loader"`
+	ArtifactSHA256 string `yaml:"artifact_sha256"`
+	Fingerprint    string `yaml:"fingerprint"`
+	// RequireIdentity refuses the patch unless loader, artifact_sha256 and fingerprint are all set.
+	RequireIdentity bool `yaml:"require_identity"`
+	// Mode is "enforce" (the default: return Value) or "observe": count the calls of the exact
+	// method without changing it. Counters come back in the rule status, where "unknown" (no or
+	// vanished counters) is never shown as zero.
+	Mode string `yaml:"mode"`
+	// Predicate, observe mode only, also counts the calls whose String argument contains a
+	// literal. It is a test-only closed form: one parameter, one literal, no pattern language.
+	Predicate *PatchPredicate `yaml:"predicate"`
+}
+
+// PatchPredicate counts a call as a hit when the String parameter at Argument (0 is the first
+// parameter, never the receiver) contains Contains.
+type PatchPredicate struct {
+	Argument int    `yaml:"argument"`
+	Contains string `yaml:"contains"`
+}
+
+// Observing reports whether the patch only counts calls.
+func (p *PatchSpec) Observing() bool {
+	return p.Mode == PatchModeObserve
 }
 
 func (p *PatchSpec) Target() string {
 	return p.Class + "." + p.Method + p.Descriptor
 }
 
+// Key identifies one patch slot in a process: the method plus the class loader it is aimed at.
+// The same method in two loaders is two slots, so they can be patched, expired and removed
+// independently.
+func (p *PatchSpec) Key() string {
+	return p.Target() + "@" + p.Loader
+}
+
 func (p *PatchSpec) Validate() error {
 	if p.Class == "" || p.Method == "" || p.Descriptor == "" {
 		return errors.New("patch class, method and descriptor are required")
 	}
-	if !strings.HasPrefix(p.Descriptor, "(") || !strings.HasSuffix(p.Descriptor, ")Ljava/lang/String;") {
-		return fmt.Errorf("patch %s: descriptor must be a JVM method descriptor returning java.lang.String", p.Target())
+	if p.Mode != "" && p.Mode != PatchModeEnforce && p.Mode != PatchModeObserve {
+		return fmt.Errorf("patch %s: mode must be %q or %q", p.Target(), PatchModeEnforce, PatchModeObserve)
 	}
-	if p.Action != PatchActionReturn {
-		return fmt.Errorf("patch %s: action must be %q", p.Target(), PatchActionReturn)
+	if p.Observing() {
+		// Counting works for any method; an observing patch never returns a value.
+		if !strings.HasPrefix(p.Descriptor, "(") || !strings.Contains(p.Descriptor, ")") {
+			return fmt.Errorf("patch %s: descriptor must be a JVM method descriptor", p.Target())
+		}
+		if p.Action != "" && p.Action != PatchActionReturn {
+			return fmt.Errorf("patch %s: action must be empty or %q in observe mode", p.Target(), PatchActionReturn)
+		}
+		if p.Value != "" {
+			return fmt.Errorf("patch %s: value is not used in observe mode", p.Target())
+		}
+	} else {
+		if !strings.HasPrefix(p.Descriptor, "(") || !strings.HasSuffix(p.Descriptor, ")Ljava/lang/String;") {
+			return fmt.Errorf("patch %s: descriptor must be a JVM method descriptor returning java.lang.String", p.Target())
+		}
+		if p.Action != PatchActionReturn {
+			return fmt.Errorf("patch %s: action must be %q", p.Target(), PatchActionReturn)
+		}
+		if p.Predicate != nil {
+			return fmt.Errorf("patch %s: predicate needs mode %q", p.Target(), PatchModeObserve)
+		}
+	}
+	if p.Predicate != nil {
+		if p.Predicate.Argument < 0 || p.Predicate.Argument > MaxPredicateArgument {
+			return fmt.Errorf("patch %s: predicate argument must be between 0 and %d", p.Target(), MaxPredicateArgument)
+		}
+		if p.Predicate.Contains == "" || len(p.Predicate.Contains) > MaxPredicateContainsBytes {
+			return fmt.Errorf("patch %s: predicate contains must be 1 to %d bytes", p.Target(), MaxPredicateContainsBytes)
+		}
 	}
 	if p.TTL <= 0 || p.TTL > MaxPatchTTL {
 		return fmt.Errorf("patch %s: ttl must be between 0 and %s", p.Target(), MaxPatchTTL)
+	}
+	if p.Loader != "" && !patchLoaderSelector.MatchString(p.Loader) {
+		return fmt.Errorf("patch %s: loader must look like loader:<number> or loader:bootstrap", p.Target())
+	}
+	if p.ArtifactSHA256 != "" && !sha256Hex.MatchString(p.ArtifactSHA256) {
+		return fmt.Errorf("patch %s: artifact_sha256 must be 64 hexadecimal digits", p.Target())
+	}
+	if p.Fingerprint != "" && !sha256Hex.MatchString(p.Fingerprint) {
+		return fmt.Errorf("patch %s: fingerprint must be 64 hexadecimal digits", p.Target())
+	}
+	if p.RequireIdentity && (p.Loader == "" || p.ArtifactSHA256 == "" || p.Fingerprint == "") {
+		return fmt.Errorf("patch %s: require_identity needs loader, artifact_sha256 and fingerprint", p.Target())
 	}
 	return nil
 }
