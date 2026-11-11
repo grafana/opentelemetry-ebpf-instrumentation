@@ -22,8 +22,10 @@
   const MAX_ARGS = 12;
   const MAX_STRING = 127;
   const MAX_PAYLOAD = 1900;
+  const MAX_PATCH_REQUEST_BYTES = 262210;
   const scopes = new AsyncLocalStorage();
   const probes = new Map();
+  const patches = new Map();
   const wrappers = new WeakMap();
   const token = crypto.randomBytes(16);
   let session;
@@ -215,6 +217,17 @@
   }
 
   function detach(cookie) {
+    const patch = patches.get(cookie);
+    if (patch) {
+      patch.active = false;
+      clearTimeout(patch.timer);
+      const descriptor = Object.getOwnPropertyDescriptor(patch.owner, patch.key);
+      if (descriptor && descriptor.value === patch.wrapper) {
+        Object.defineProperty(patch.owner, patch.key, { ...descriptor, value: patch.original });
+      }
+      patches.delete(cookie);
+      return;
+    }
     const probe = probes.get(cookie);
     if (!probe) return;
     probe.active = false;
@@ -228,8 +241,16 @@
   function attach(name, cookie) {
     const entry = discover().get(name);
     if (!entry) throw new Error('No writable CommonJS function matches ' + name);
+    const existing = probes.get(cookie);
+    if (existing) {
+      if (existing.owner === entry.owner && existing.key === entry.key && existing.active) return;
+      throw new Error('patch cookie is already active');
+    }
+    if (patches.has(cookie)) throw new Error('patch cookie is already active');
+    if ([...patches.values()].some(p => p.owner === entry.owner && p.key === entry.key)) {
+      throw new Error('function already has a return patch');
+    }
     const prior = [...probes.values()].find(p => p.owner === entry.owner && p.key === entry.key);
-    if (prior && prior.cookie === cookie && prior.active) return;
     const probe = { ...entry, cookie, name, active: true };
     probe.wrapper = new Proxy(entry.original, {
       apply(target, receiver, args) { return invoke(probe, target, receiver, args); },
@@ -238,6 +259,44 @@
     wrappers.set(probe.wrapper, probe);
     probes.set(cookie, probe);
     if (prior) detach(prior.cookie);
+  }
+
+  function attachReturn(name, value, expiresAt, cookie) {
+    if (typeof value !== 'string') throw new Error('return patch value must be a string');
+    const remainingMs = expiresAt - Date.now();
+    if (!Number.isSafeInteger(expiresAt) || remainingMs <= 0 || remainingMs > 24 * 60 * 60 * 1000) {
+      throw new Error('return patch expiry must be in the next 24 hours');
+    }
+    const entry = discover().get(name);
+    if (!entry) throw new Error('No writable CommonJS function matches ' + name);
+    if (patches.has(cookie) || probes.has(cookie)) throw new Error('patch cookie is already active');
+    if ([...probes.values()].some(p => p.owner === entry.owner && p.key === entry.key)) throw new Error('function already has a span probe');
+    const prior = [...patches.values()].find(p => p.owner === entry.owner && p.key === entry.key);
+    const patch = { ...entry, cookie, name, value, active: true,
+      deadline: process.hrtime.bigint() + BigInt(remainingMs) * 1000000n };
+    patch.wrapper = new Proxy(entry.original, {
+      apply(target, receiver, args) {
+        if (!patch.active) return Reflect.apply(target, receiver, args);
+        if (process.hrtime.bigint() >= patch.deadline) {
+          detach(patch.cookie);
+          return Reflect.apply(target, receiver, args);
+        }
+        return patch.value;
+      },
+    });
+    Object.defineProperty(entry.owner, entry.key, { ...entry.descriptor, value: patch.wrapper });
+    wrappers.set(patch.wrapper, patch);
+    patches.set(cookie, patch);
+    if (prior) detach(prior.cookie);
+    patch.timer = setTimeout(() => detach(cookie), remainingMs);
+    patch.timer.unref();
+  }
+
+  function readString(data, offset) {
+    if (offset + 4 > data.length) throw new Error('short patch request');
+    const size = data.readUInt32BE(offset);
+    if (size > 65536 || offset + 4 + size > data.length) throw new Error('invalid patch string');
+    return { value: data.subarray(offset + 4, offset + 4 + size).toString(), next: offset + 4 + size };
   }
 
   function wireString(value) {
@@ -253,6 +312,7 @@
     if (op === 4) {
       if (requestedSession !== session) {
         for (const cookie of probes.keys()) detach(cookie);
+        for (const cookie of patches.keys()) detach(cookie);
         session = requestedSession;
       }
     } else {
@@ -266,6 +326,19 @@
         const length = data.readUInt32BE(33);
         attach(data.subarray(37, 37 + length).toString(), data.subarray(37 + length, 45 + length).toString('hex'));
       } else if (op === 3) detach(data.subarray(33, 41).toString('hex'));
+      else if (op === 5) {
+        const className = readString(data, 33);
+        const method = readString(data, className.next);
+        const descriptor = readString(data, method.next);
+        if (className.value || descriptor.value) throw new Error('Node patches use only a CommonJS export symbol');
+        const actionOffset = descriptor.next;
+        if (actionOffset + 1 > data.length || data[actionOffset] !== 1) throw new Error('unsupported patch action');
+        const value = readString(data, actionOffset + 1);
+        if (value.next + 16 !== data.length) throw new Error('invalid patch request length');
+        const expiresAt = Number(data.readBigInt64BE(value.next));
+        const cookie = data.subarray(value.next + 8, value.next + 16).toString('hex');
+        attachReturn(method.value, value.value, expiresAt, cookie);
+      }
       else throw new Error('Unknown agent command');
     }
     return Buffer.from([0]);
@@ -280,14 +353,32 @@
     socket.on('data', chunk => {
       if (complete) return;
       data = Buffer.concat([data, chunk]);
-      if (data.length > 65581) { socket.destroy(); return; }
       if (data.length < 33) return;
       const op = data[32];
+      if (data.length > (op === 5 ? MAX_PATCH_REQUEST_BYTES : 65581)) { socket.destroy(); return; }
       let length = op === 3 ? 41 : 33;
       if (op === 2) {
         if (data.length < 37) return;
         length = 45 + data.readUInt32BE(33);
         if (length > 65581) { socket.destroy(); return; }
+      }
+      if (op === 5) {
+        // Three length-prefixed identity strings, action byte, return string,
+        // absolute expiry and cookie. The overall request stays bounded.
+        let offset = 33;
+        for (let i = 0; i < 3; i++) {
+          if (data.length < offset + 4) return;
+          const size = data.readUInt32BE(offset);
+          if (size > 65536) { socket.destroy(); return; }
+          offset += 4 + size;
+          if (data.length < offset) return;
+        }
+        if (data.length < offset + 1 + 4) return;
+        offset++;
+        const size = data.readUInt32BE(offset);
+        if (size > 65536) { socket.destroy(); return; }
+        length = offset + 4 + size + 16;
+        if (length > MAX_PATCH_REQUEST_BYTES) { socket.destroy(); return; }
       }
       if (data.length < length) return;
       complete = true;
