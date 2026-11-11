@@ -20,6 +20,7 @@ import java.util.List;
  * A process-local, capability-protected control channel; the endpoint is advertised through BPF.
  */
 public final class DynamicControl {
+  private static final int PATCH_ACTION_RETURN = 1;
   private static DynamicControl instance;
   private final DynamicInstrumentation instrumentation;
   private final ServerSocket server;
@@ -99,6 +100,9 @@ public final class DynamicControl {
                 owner = session;
               }
               break;
+            case 5:
+              attachPatch(input);
+              break;
             default:
               throw new IllegalArgumentException("Unknown dynamic control operation");
           }
@@ -120,6 +124,20 @@ public final class DynamicControl {
         }
       }
     }
+  }
+
+  private void attachPatch(DataInputStream input) throws Exception {
+    String className = readString(input);
+    String method = readString(input);
+    String descriptor = readString(input);
+    int action = input.readUnsignedByte();
+    String constant = readString(input);
+    long expiresAtMillis = input.readLong();
+    long cookie = input.readLong();
+    if (action != PATCH_ACTION_RETURN) {
+      throw new IllegalArgumentException("Unknown patch action");
+    }
+    instrumentation.attachPatch(className, method, descriptor, constant, expiresAtMillis, cookie);
   }
 
   private static String readString(DataInputStream input) throws IOException {

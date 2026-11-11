@@ -319,6 +319,8 @@ public class Agent {
           "io.opentelemetry.obi.java.dynamic.DynamicSpanRuntime",
           "io.opentelemetry.obi.java.dynamic.DynamicSpanRuntime$1",
           "io.opentelemetry.obi.java.dynamic.DynamicSpanRuntime$Invocation",
+          "io.opentelemetry.obi.java.dynamic.PatchRuntime",
+          "io.opentelemetry.obi.java.dynamic.PatchRuntime$Patch",
           "io.opentelemetry.obi.java.dynamic.SpanContextBridge",
           "io.opentelemetry.obi.java.ebpf.DynamicSpanPacket",
           "io.opentelemetry.obi.java.ebpf.ThreadInfo$DynamicTaskRunnable"
