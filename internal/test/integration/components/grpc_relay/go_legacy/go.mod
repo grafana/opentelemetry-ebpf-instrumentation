@@ -1,6 +1,6 @@
 module go.opentelemetry.io/obi/internal/test/integration/components/grpc-relay/go-legacy
 
-go 1.20
+go 1.26.0
 
 require (
 	google.golang.org/grpc v1.56.3
@@ -9,8 +9,8 @@ require (
 
 require (
 	github.com/golang/protobuf v1.5.3 // indirect
-	golang.org/x/net v0.9.0 // indirect
-	golang.org/x/sys v0.7.0 // indirect
-	golang.org/x/text v0.9.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/genproto v0.0.0-20230410155749-daa745c078e1 // indirect
 )
